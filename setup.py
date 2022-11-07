@@ -1,0 +1,37 @@
+from setuptools import setup, find_packages
+
+
+setup(
+    name='unitlab',
+    version='0.6',
+    license='MIT',
+    author="Unitlab Inc.",
+    author_email='tesm@unitlab.ai',
+    packages=find_packages('src'),
+    include_package_data = True,
+    package_data = {
+    'static': ['*'],
+    'Potato': ['*.so']
+    },
+    classifiers=[
+        #   3 - Alpha
+        #   4 - Beta
+        #   5 - Production/Stable
+        "Development Status :: 4 - Beta",
+        "Intended Audience :: Developers",
+        "License :: OSI Approved :: MIT License",
+        "Programming Language :: Python :: 3",
+        "Programming Language :: Python :: 3.7",
+        "Programming Language :: Python :: 3.8",
+        "Programming Language :: Python :: 3.9",
+        "Programming Language :: Python :: 3.10",
+    ],
+    package_dir={'': 'src'},
+    url='--',
+    keywords='unitlab-sdk',
+    install_requires=[
+          'aiohttp',
+      ],
+
+
+)
