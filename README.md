@@ -30,7 +30,7 @@ Easy and straightforward data annotation platform for any business or company to
 
 ## How to generate secure so files
 
-# Skip it now, we don't need to build binaries during debugging! Just use pure python source!
+### Skip it now, we don't need to build binaries during debugging! Just use pure python source!
 python compile.py build_ext --inplace
 
 ## How to generate pip files
