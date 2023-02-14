@@ -3,10 +3,10 @@ from setuptools import setup, find_packages
 
 setup(
     name='unitlab',
-    version='0.6',
+    version='1.5.0',
     license='MIT',
     author="Unitlab Inc.",
-    author_email='tesm@unitlab.ai',
+    author_email='team@unitlab.ai',
     packages=find_packages('src'),
     include_package_data = True,
     package_data = {
@@ -27,11 +27,15 @@ setup(
         "Programming Language :: Python :: 3.10",
     ],
     package_dir={'': 'src'},
-    url='--',
+    url='https://github.com/teamunitlab/unitlab-sdk',
     keywords='unitlab-sdk',
     install_requires=[
           'aiohttp',
       ],
-
+    entry_points={
+        "console_scripts": [
+            "ulab=unitlab.run:main"
+        ],
+    },
 
 )

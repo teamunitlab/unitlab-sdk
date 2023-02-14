@@ -1,2 +1,3 @@
+include run.py
 include src/unitlab/*
 include src/unitlab/core.cpython-37m-darwin.so
