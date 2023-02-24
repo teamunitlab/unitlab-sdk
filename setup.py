@@ -2,7 +2,7 @@ from setuptools import find_packages, setup
 
 setup(
     name='unitlab',
-    version='1.7.0',
+    version='1.7.4',
     license='MIT',
     author="Unitlab Inc.",
     author_email='team@unitlab.ai',
@@ -31,10 +31,11 @@ setup(
     install_requires=[
           'aiohttp',
           'requests',
+          'prettytable'
       ],
     entry_points={
         "console_scripts": [
-            "ulab=unitlab.run:main"
+            "unitlab=unitlab.run:main"
         ],
     },
 

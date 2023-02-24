@@ -10,6 +10,8 @@ from uuid import UUID
 import aiohttp
 import requests
 
+from . import pretty
+
 BASE_URL = "https://api-new.unitlab.ai/api/cli/"
 
 ENPOINTS = {
@@ -49,7 +51,8 @@ def ai_model_list(namespace):
         url=ENPOINTS[namespace.func.__name__],
         headers=get_headers(namespace),
     )
-    pprint.pprint(r.json())
+    r.raise_for_status()
+    pretty.print_ai_model(r.json(), many=True)
 
 
 def ai_model_detail(namespace):
@@ -57,7 +60,8 @@ def ai_model_detail(namespace):
         url=ENPOINTS[namespace.func.__name__].format(namespace.uuid),
         headers=get_headers(namespace),
     )
-    pprint.pprint(r.json())
+    r.raise_for_status()
+    pretty.print_ai_model(r.json(), many=False)
 
 
 def task_list(namespace):
@@ -65,7 +69,8 @@ def task_list(namespace):
         url=ENPOINTS[namespace.func.__name__],
         headers=get_headers(namespace),
     )
-    pprint.pprint(r.json())
+    r.raise_for_status()
+    pretty.print_task(r.json(), many=True)
 
 
 def task_detail(namespace):
@@ -73,7 +78,8 @@ def task_detail(namespace):
         url=ENPOINTS[namespace.func.__name__].format(namespace.uuid),
         headers=get_headers(namespace),
     )
-    pprint.pprint(r.json())
+    r.raise_for_status()
+    pretty.print_task(r.json(), many=False)
 
 
 def task_data_sources(namespace):
@@ -81,7 +87,8 @@ def task_data_sources(namespace):
         url=ENPOINTS[namespace.func.__name__].format(namespace.uuid),
         headers=get_headers(namespace),
     )
-    pprint.pprint(r.json())
+    r.raise_for_status()
+    pretty.print_data_sources(r.json())
 
 
 def task_members(namespace):
@@ -89,7 +96,8 @@ def task_members(namespace):
         url=ENPOINTS[namespace.func.__name__].format(namespace.uuid),
         headers=get_headers(namespace),
     )
-    pprint.pprint(r.json())
+    r.raise_for_status()
+    pretty.print_members(r.json())
 
 
 def task_statistics(namespace):
@@ -97,7 +105,7 @@ def task_statistics(namespace):
         url=ENPOINTS[namespace.func.__name__].format(namespace.uuid),
         headers=get_headers(namespace),
     )
-    pprint.pprint(r.json())
+    pretty.print_task_statistics(r.json())
 
 
 def task_upload_datasources(namespace):
