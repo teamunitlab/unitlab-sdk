@@ -4,25 +4,25 @@ import errno
 import glob
 import logging
 import os
-import pprint
 from uuid import UUID
 
 import aiohttp
 import requests
+import tqdm
 
-from . import pretty
+from unitlab import pretty
 
-BASE_URL = "https://api-new.unitlab.ai/api/cli/"
+BASE_URL = "https://api-dev.unitlab.ai/api/cli"
 
 ENPOINTS = {
-    "ai_model_list": BASE_URL + "task-parent/",
-    "ai_model_detail": BASE_URL + "task-parent/{}/",
-    "task_list": BASE_URL + "task/",
-    "task_detail": BASE_URL + "task/{}/",
-    "task_data_sources": BASE_URL + "task/{}/datasource/",
-    "task_members": BASE_URL + "task/{}/members/",
-    "task_statistics": BASE_URL + "task/{}/statistics/",
-    "task_upload_datasources": BASE_URL + "task/upload-datasource/",
+    "ai_model_list": BASE_URL + "/task-parent/",
+    "ai_model_detail": BASE_URL + "/task-parent/{}/",
+    "task_list": BASE_URL + "/task/",
+    "task_detail": BASE_URL + "/task/{}/",
+    "task_data_sources": BASE_URL + "/task/{}/datasource/",
+    "task_members": BASE_URL + "/task/{}/members/",
+    "task_statistics": BASE_URL + "/task/{}/statistics/",
+    "task_upload_datasources": BASE_URL + "/task/upload-datasource/",
 }
 
 api_key_template = {
@@ -119,17 +119,18 @@ def task_upload_datasources(namespace):
 
     async def post_image(session: aiohttp.ClientSession, image: str, task_id: str):
         with open(image, "rb") as img:
-            response = await session.request(
+            await session.request(
                 "POST",
                 url=ENPOINTS[namespace.func.__name__],
                 data=aiohttp.FormData(fields={"task": task_id, "image": img}),
             )
-            logging.info(await response.json())
+            return os.path.getsize(image)
 
     async def data_upload(folder: str, api_key: str, task_id: str):
         async with aiohttp.ClientSession(
             headers={"Authorization": f"Api-Key {api_key}"}
         ) as session:
+            total_bytes = 0
             tasks = []
             images = [
                 image
@@ -140,7 +141,19 @@ def task_upload_datasources(namespace):
                 for image in images_list
             ]
             for image in images:
+                total_bytes += os.path.getsize(image)
+            for image in images:
                 tasks.append(post_image(session=session, image=image, task_id=task_id))
-            return await asyncio.gather(*tasks, return_exceptions=True)
+
+            pbar = tqdm.tqdm(
+                total=total_bytes,
+                unit="B",
+                unit_scale=True,
+                unit_divisor=1024,
+                ncols=80,
+            )
+            for f in asyncio.as_completed(tasks):
+                value = await f
+                pbar.update(value)
 
     asyncio.run(data_upload(namespace.input_dir, namespace.api_key, namespace.uuid))
