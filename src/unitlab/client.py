@@ -2,6 +2,7 @@ import asyncio
 import errno
 import glob
 import os
+import uuid
 
 import aiohttp
 import requests
@@ -245,6 +246,25 @@ class UnitlabClient:
                     pbar.update(value)
 
         asyncio.run(data_upload(directory, task_id))
+
+    def task_download_data(self, task_id):
+        """Download data from a task by id.
+
+        Args:
+            task_id: The id of the task.
+        Returns:
+            Writes the data to a json file.
+        """
+        with self.api_session.get(
+            url=ENPOINTS["task_download_data"].format(task_id),
+            headers=self._get_auth_header(),
+            stream=True,
+        ) as r:
+            r.raise_for_status()
+            filename = f"task-{task_id}-{uuid.uuid4().hex[:8]}.json"
+            with open(filename, "wb") as f:
+                for chunk in r.iter_content(chunk_size=1024 * 1024):
+                    f.write(chunk)
 
     def ai_model_list(self):
         """Get a list of all ai models.

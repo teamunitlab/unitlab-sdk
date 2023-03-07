@@ -4,6 +4,7 @@ import errno
 import glob
 import logging
 import os
+import uuid
 from uuid import UUID
 
 import aiohttp
@@ -23,6 +24,7 @@ ENPOINTS = {
     "task_members": BASE_URL + "/task/{}/members/",
     "task_statistics": BASE_URL + "/task/{}/statistics/",
     "task_upload_datasources": BASE_URL + "/task/upload-datasource/",
+    "task_download_data": BASE_URL + "/task/{}/download-data/",
 }
 
 api_key_template = {
@@ -157,3 +159,17 @@ def task_upload_datasources(namespace):
                 pbar.update(value)
 
     asyncio.run(data_upload(namespace.input_dir, namespace.api_key, namespace.uuid))
+
+
+def task_download_data(namespace):
+    session = requests.Session()
+    with session.get(
+        url=ENPOINTS[namespace.func.__name__].format(namespace.uuid),
+        headers=get_headers(namespace),
+        stream=True,
+    ) as r:
+        r.raise_for_status()
+        filename = f"task-{namespace.uuid}-{uuid.uuid4().hex[:8]}.json"
+        with open(filename, "wb") as f:
+            for chunk in r.iter_content(chunk_size=1024 * 1024):
+                f.write(chunk)
