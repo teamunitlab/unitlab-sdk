@@ -82,6 +82,16 @@ def main():
     )
     parser_task_download_labeled_data.set_defaults(func=core.task_download_data)
 
+    # DataSource Result
+    parser_datasource_result = subparsers.add_parser(
+        "datasource-result", help="Get datasource result"
+    )
+    parser_datasource_result.add_argument(
+        "-id", "--uuid", type=core.validate_uuid, required=True, help="DataSource uuid"
+    )
+    parser_datasource_result.add_argument("-k", "--api_key", **core.api_key_template)
+    parser_datasource_result.set_defaults(func=core.datasource_result)
+
     # AI Model List
     parser_ai_model_list = subparsers.add_parser(
         "ai-model-list", help="Get AI model list"

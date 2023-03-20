@@ -4,12 +4,16 @@ import errno
 import glob
 import logging
 import os
-import uuid
+import re
+from io import BytesIO
 from uuid import UUID
 
 import aiohttp
+import cv2
+import numpy as np
 import requests
 import tqdm
+from PIL import Image, ImageColor, ImageDraw
 
 from unitlab import pretty
 
@@ -25,6 +29,7 @@ ENPOINTS = {
     "task_statistics": BASE_URL + "/task/{}/statistics/",
     "task_upload_datasources": BASE_URL + "/task/upload-datasource/",
     "task_download_data": BASE_URL + "/task/{}/download-data/",
+    "datasource_result": BASE_URL + "/datasource/{}/result/",
 }
 
 api_key_template = {
@@ -162,14 +167,72 @@ def task_upload_datasources(namespace):
 
 
 def task_download_data(namespace):
-    session = requests.Session()
-    with session.get(
+    response = requests.get(
         url=ENPOINTS[namespace.func.__name__].format(namespace.uuid),
         headers=get_headers(namespace),
+    )
+    response.raise_for_status()
+    session = requests.Session()
+    with session.get(
+        url=response.json()["file"],
         stream=True,
     ) as r:
         r.raise_for_status()
-        filename = f"task-{namespace.uuid}-{uuid.uuid4().hex[:8]}.json"
+        if "Content-Disposition" in r.headers.keys():
+            content_disposition = r.headers["Content-Disposition"]
+            filename_match = re.search('filename="(.+)"', content_disposition)
+            if filename_match:
+                filename = filename_match.group(1)
+            else:
+                filename = f"task-data-{namespace.uuid}.json"
+        else:
+            filename = f"task-data-{namespace.uuid}.json"
+
         with open(filename, "wb") as f:
             for chunk in r.iter_content(chunk_size=1024 * 1024):
                 f.write(chunk)
+
+
+def datasource_result(namespace):
+    r = requests.get(
+        url=ENPOINTS[namespace.func.__name__].format(namespace.uuid),
+        headers=get_headers(namespace),
+    )
+    r.raise_for_status()
+    if r.status_code == 204:
+        print("No results yet")
+        return
+    result = r.json()
+    if result["render_type"] == "img_segmentation":
+        bitmap = np.array(Image.open(BytesIO(requests.get(result["source"]).content)))
+        classes = result["classes"]
+        bitmap = bitmap[:, :, 0] if len(bitmap.shape) > 2 else bitmap
+        bitmap = np.array(bitmap)
+        label_values = [list(ImageColor.getcolor(l["color"], "RGB")) for l in classes]
+        label_values.insert(0, [0, 0, 0])  # Add background color
+        label_values = np.array(label_values)
+        thumbnail = label_values[bitmap.astype(int)]
+        thumbnail = np.array(thumbnail).astype(np.uint8)
+        thumbnail = cv2.cvtColor(thumbnail, cv2.COLOR_RGB2RGBA)
+        thumbnail[thumbnail[:, :, 3] == 255, 3] = 128
+        thumbnail = Image.fromarray(thumbnail)
+        return thumbnail.show()
+    elif result["render_type"] == "img_bbox":
+        rotation = result.get("image", {}).get("rotation", 0)
+        boxes = result["bboxes"]
+        canvas = Image.open(BytesIO(requests.get(result["source"]).content))
+        if rotation:
+            canvas = canvas.rotate(rotation, expand=False)
+        for line in boxes:
+            for box in line:
+                poly = box["box"]
+                class_ = box["class"]
+                label_values = [
+                    list(ImageColor.getcolor(l["color"], "RGB"))
+                    for l in result["classes"]
+                ]
+                class_color = label_values[class_]
+                poly = [(p[0], p[1]) for p in poly]
+                ImageDraw.Draw(canvas).polygon(poly, outline=tuple(class_color))
+        return canvas.show()
+    print("No results yet")

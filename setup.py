@@ -2,7 +2,7 @@ from setuptools import find_packages, setup
 
 setup(
     name="unitlab",
-    version="1.7.8",
+    version="1.7.9",
     license="MIT",
     author="Unitlab Inc.",
     author_email="team@unitlab.ai",
@@ -30,6 +30,9 @@ setup(
         "requests",
         "prettytable",
         "tqdm",
+        "numpy",
+        "opencv-python",
+        "Pillow",
     ],
     entry_points={
         "console_scripts": ["unitlab=unitlab.run:main"],

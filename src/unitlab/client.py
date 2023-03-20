@@ -2,7 +2,7 @@ import asyncio
 import errno
 import glob
 import os
-import uuid
+import re
 
 import aiohttp
 import requests
@@ -255,13 +255,26 @@ class UnitlabClient:
         Returns:
             Writes the data to a json file.
         """
-        with self.api_session.get(
+        response = self.api_session.get(
             url=ENPOINTS["task_download_data"].format(task_id),
             headers=self._get_auth_header(),
+        )
+        response.raise_for_status()
+        with self.api_session.get(
+            url=response.json()["file"],
             stream=True,
         ) as r:
             r.raise_for_status()
-            filename = f"task-{task_id}-{uuid.uuid4().hex[:8]}.json"
+            if "Content-Disposition" in r.headers.keys():
+                content_disposition = r.headers["Content-Disposition"]
+                filename_match = re.search('filename="(.+)"', content_disposition)
+                if filename_match:
+                    filename = filename_match.group(1)
+                else:
+                    filename = f"task-data-{task_id}.json"
+            else:
+                filename = f"task-data-{task_id}.json"
+
             with open(filename, "wb") as f:
                 for chunk in r.iter_content(chunk_size=1024 * 1024):
                     f.write(chunk)
