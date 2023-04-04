@@ -1,8 +1,6 @@
 import argparse
 import asyncio
-import errno
 import glob
-import logging
 import os
 import re
 from io import BytesIO
@@ -116,54 +114,60 @@ def task_statistics(namespace):
 
 
 def task_upload_datasources(namespace):
-    logging.basicConfig(level=logging.INFO, format=None)
+    if not os.path.exists(namespace.input_dir):
+        raise ValueError(f"Directory {namespace.input_dir} does not exist.")
+
+    async def upload_images(session, endpoint, task_id, images, progress_bar):
+        for file_path in images:
+            with open(file_path, "rb") as image:
+                async with session.post(
+                    endpoint,
+                    data=aiohttp.FormData(fields={"task": task_id, "image": image}),
+                ) as response:
+                    if response.status != 201:
+                        raise Exception(
+                            f"Failed to upload file {file_path}. HTTP status code: {response.status}"
+                        )
+                    progress_bar.update(os.path.getsize(file_path))
+                    await response.read()
+
+    async def upload_images_in_batches(
+        folder: str, api_key: str, task_id: str, batch_size=1000
+    ):
+        images = [
+            image
+            for images_list in [
+                glob.glob(os.path.join(folder, "") + extension)
+                for extension in ["*jpg", "*png"]
+            ]
+            for image in images_list
+        ]
+        total_size = sum(os.path.getsize(f) for f in images)
+        endpoint = ENPOINTS[namespace.func.__name__]
+
+        with tqdm.tqdm(total=total_size, unit="B", unit_scale=True) as progress_bar:
+            async with aiohttp.ClientSession(
+                headers={"Authorization": f"Api-Key {api_key}"}
+            ) as session:
+                for i in range(0, len(images), batch_size):
+                    batch_images = images[i : i + batch_size]
+                    tasks = [
+                        asyncio.create_task(
+                            upload_images(
+                                session, endpoint, task_id, batch_images, progress_bar
+                            )
+                        )
+                    ]
+                    await asyncio.gather(*tasks)
 
     try:
-        os.makedirs(namespace.input_dir)
-    except OSError as e:
-        if e.errno != errno.EEXIST:
-            raise
-
-    async def post_image(session: aiohttp.ClientSession, image: str, task_id: str):
-        with open(image, "rb") as img:
-            await session.request(
-                "POST",
-                url=ENPOINTS[namespace.func.__name__],
-                data=aiohttp.FormData(fields={"task": task_id, "image": img}),
+        asyncio.run(
+            upload_images_in_batches(
+                namespace.input_dir, namespace.api_key, namespace.uuid, batch_size=1000
             )
-            return os.path.getsize(image)
-
-    async def data_upload(folder: str, api_key: str, task_id: str):
-        async with aiohttp.ClientSession(
-            headers={"Authorization": f"Api-Key {api_key}"}
-        ) as session:
-            total_bytes = 0
-            tasks = []
-            images = [
-                image
-                for images_list in [
-                    glob.glob(os.path.join(folder, "") + extension)
-                    for extension in ["*jpg", "*png"]
-                ]
-                for image in images_list
-            ]
-            for image in images:
-                total_bytes += os.path.getsize(image)
-            for image in images:
-                tasks.append(post_image(session=session, image=image, task_id=task_id))
-
-            pbar = tqdm.tqdm(
-                total=total_bytes,
-                unit="B",
-                unit_scale=True,
-                unit_divisor=1024,
-                ncols=80,
-            )
-            for f in asyncio.as_completed(tasks):
-                value = await f
-                pbar.update(value)
-
-    asyncio.run(data_upload(namespace.input_dir, namespace.api_key, namespace.uuid))
+        )
+    except Exception as e:
+        print(str(e))
 
 
 def task_download_data(namespace):
