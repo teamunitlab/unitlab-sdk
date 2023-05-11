@@ -1,0 +1,19 @@
+Metadata-Version: 1.1
+Name: unitlab
+Version: 1.8.1
+Summary: UNKNOWN
+Home-page: https://github.com/teamunitlab/unitlab-sdk
+Author: Unitlab Inc.
+Author-email: team@unitlab.ai
+License: MIT
+Description: UNKNOWN
+Keywords: unitlab-sdk
+Platform: UNKNOWN
+Classifier: Development Status :: 4 - Beta
+Classifier: Intended Audience :: Developers
+Classifier: License :: OSI Approved :: MIT License
+Classifier: Programming Language :: Python :: 3
+Classifier: Programming Language :: Python :: 3.7
+Classifier: Programming Language :: Python :: 3.8
+Classifier: Programming Language :: Python :: 3.9
+Classifier: Programming Language :: Python :: 3.10

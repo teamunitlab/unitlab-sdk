@@ -1,0 +1,7 @@
+aiohttp
+requests
+prettytable
+tqdm
+numpy
+opencv-python
+Pillow

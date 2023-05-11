@@ -18,7 +18,7 @@ def main():
     parser_task_list.set_defaults(func=core.task_list)
 
     # Task Detail
-    parser_task_detail = subparsers.add_parser("task", help="Get task detail")
+    parser_task_detail = subparsers.add_parser("task-detail", help="Get task detail")
     parser_task_detail.add_argument(
         "-id", "--uuid", type=core.validate_uuid, required=True, help="Task uuid"
     )
