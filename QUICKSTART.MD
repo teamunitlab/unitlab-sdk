@@ -1,4 +1,4 @@
-First install the Segments.ai Python SDK using pip:
+First install the Unitlab.ai Python SDK using pip:
     pip install --upgrade unitlab
 
 Import the necessary packages, and initialize the Unitlab client using your API key:

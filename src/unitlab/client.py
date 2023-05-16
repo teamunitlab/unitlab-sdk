@@ -40,9 +40,9 @@ class UnitlabClient:
         client = UnitlabClient()
 
     Args:
-        api_key: Your Segments.ai API key. If no API key given, reads ``SEGMENTS_API_KEY`` from the environment. Defaults to :obj:`None`.
+        api_key: Your Unitlab.ai API key. If no API key given, reads ``UNITLAB_API_KEY`` from the environment. Defaults to :obj:`None`.
     Raises:
-        :exc:`~segments.exceptions.AuthenticationError`: If an invalid API key is used or (when not passing the API key directly) if ``SEGMENTS_API_KEY`` is not found in your environment.
+        :exc:`~unitlab.exceptions.AuthenticationError`: If an invalid API key is used or (when not passing the API key directly) if ``UNITLAB_API_KEY`` is not found in your environment.
     """
 
     def __init__(
@@ -50,13 +50,13 @@ class UnitlabClient:
         api_key: str = None,
     ):
         if api_key is None:
-            api_key = os.getenv("SEGMENTS_API_KEY")
+            api_key = os.getenv("UNITLAB_API_KEY")
             if api_key is None:
                 raise AuthenticationError(
-                    message="Please provide the api_key argument or set SEGMENTS_API_KEY in your environment."
+                    message="Please provide the api_key argument or set UNITLAB_API_KEY in your environment."
                 )
             else:
-                print("Found a Segments API key in your environment.")
+                print("Found a Unitlab API key in your environment.")
 
         self.api_key = api_key
 
@@ -84,7 +84,7 @@ class UnitlabClient:
     def close(self) -> None:
         """Close :class:`UnitlabClient` connections.
 
-        You can manually close the Segments client's connections:
+        You can manually close the Unitlab client's connections:
 
         .. code-block:: python
 
