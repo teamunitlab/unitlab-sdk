@@ -1,3 +1,0 @@
-[console_scripts]
-unitlab = unitlab.run:main
-
