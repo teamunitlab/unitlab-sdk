@@ -1,6 +1,6 @@
 import asyncio
-import errno
 import glob
+import logging
 import os
 import re
 
@@ -10,7 +10,7 @@ import tqdm
 
 from .exceptions import AuthenticationError, NetworkError
 
-BASE_URL = "https://api.unitlab.ai/api/cli"
+BASE_URL = "https://api-dev.unitlab.ai/api/cli"
 
 ENPOINTS = {
     "ai_model_list": BASE_URL + "/task-parent/",
@@ -23,7 +23,12 @@ ENPOINTS = {
     "task_upload_datasources": BASE_URL + "/task/upload-datasource/",
     "task_download_data": BASE_URL + "/task/{}/download-data/",
     "datasource_result": BASE_URL + "/datasource/{}/result/",
+    "datasets": BASE_URL + "/datasets/",
+    "dataset_detail": BASE_URL + "/datasets/{}/",
 }
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 
 class UnitlabClient:
@@ -66,15 +71,13 @@ class UnitlabClient:
                 raise AuthenticationError(
                     message="Please provide the api_key argument or set UNITLAB_API_KEY in your environment."
                 )
-            else:
-                print("Found a Unitlab API key in your environment.")
+            logger.info("Found a Unitlab API key in your environment.")
 
         self.api_key = api_key
         self.api_session = requests.Session()
         adapter = requests.adapters.HTTPAdapter(max_retries=3)
         self.api_session.mount("http://", adapter)
         self.api_session.mount("https://", adapter)
-
         if check_connection:
             try:
                 r = self.api_session.get(
@@ -82,7 +85,7 @@ class UnitlabClient:
                 )
                 r.raise_for_status()
                 if r.status_code == 200:
-                    print("Successfully connected to the Unitlab.ai API.")
+                    logger.info("Successfully connected to the Unitlab.ai API.")
             except NetworkError:
                 raise AuthenticationError(
                     message="Something went wrong. Did you use the right API key?"
@@ -108,7 +111,6 @@ class UnitlabClient:
         """
         self.api_session.close()
 
-    # Use UnitlabClient as a context manager (e.g., with UnitlabClient() as client: client.add_dataset()).
     def __enter__(self):
         return self
 
@@ -122,9 +124,6 @@ class UnitlabClient:
 
     def _get_auth_header(self):
         return {"Authorization": f"Api-Key {self.api_key}"} if self.api_key else None
-
-    # available endpoints
-    # {task-list,task-detail,task-data,task-members,task-statistics,task-upload-data,ai-model-list,ai-model-detail}
 
     def task_list(self):
         """Get a list of all tasks.
@@ -196,63 +195,70 @@ class UnitlabClient:
         r.raise_for_status()
         return r.json()
 
-    def upload_data(self, task_id, directory):
+    def upload_data(self, task_id, directory, batch_size=100):
         """Upload data to a task by id.
 
         Args:
             task_id: The id of the task.
             directory: The directory of images to upload.
+            batch_size: The batch size of images to upload.
         Returns:
             The upload status.
         """
-        try:
-            os.makedirs(directory)
-        except OSError as e:
-            if e.errno != errno.EEXIST:
-                raise
+
+        if not os.path.isdir(directory):
+            raise ValueError(f"Directory {directory} does not exist")
 
         async def post_image(session: aiohttp.ClientSession, image: str, task_id: str):
             with open(image, "rb") as img:
-                await session.request(
-                    "POST",
-                    url=ENPOINTS["task_upload_datasources"],
-                    data=aiohttp.FormData(fields={"task": task_id, "image": img}),
-                )
-                return os.path.getsize(image)
-
-        async def data_upload(folder: str, task_id: str):
-            async with aiohttp.ClientSession(
-                headers=self._get_auth_header()
-            ) as session:
-                total_bytes = 0
-                tasks = []
-                images = [
-                    image
-                    for images_list in [
-                        glob.glob(os.path.join(folder, "") + extension)
-                        for extension in ["*jpg", "*png"]
-                    ]
-                    for image in images_list
-                ]
-                for image in images:
-                    total_bytes += os.path.getsize(image)
-                for image in images:
-                    tasks.append(
-                        post_image(session=session, image=image, task_id=task_id)
+                try:
+                    response = await session.request(
+                        "POST",
+                        url=ENPOINTS["task_upload_datasources"],
+                        data=aiohttp.FormData(fields={"task": task_id, "image": img}),
                     )
+                    return 1 if response.status == 201 else 0
+                except Exception as e:
+                    logger.error(f"Error uploading image {image} - {e}")
+                    return 0
 
-                pbar = tqdm.tqdm(
-                    total=total_bytes,
-                    unit="B",
-                    unit_scale=True,
-                    unit_divisor=1024,
-                    ncols=80,
+        async def batch_upload(
+            session: aiohttp.ClientSession, batch: list, task_id: str, pbar: tqdm.tqdm
+        ):
+            tasks = []
+            for image in batch:
+                tasks.append(post_image(session=session, image=image, task_id=task_id))
+            for f in asyncio.as_completed(tasks):
+                pbar.update(await f)
+
+        async def main():
+            images = [
+                image
+                for images_list in (
+                    glob.glob(os.path.join(directory, "") + extension)
+                    for extension in ["*jpg", "*png"]
                 )
-                for f in asyncio.as_completed(tasks):
-                    value = await f
-                    pbar.update(value)
+                for image in images_list
+            ]
+            num_images = len(images)
+            num_batches = (num_images + batch_size - 1) // batch_size
 
-        asyncio.run(data_upload(directory, task_id))
+            logger.info(f"Uploading {num_images} images to task {task_id}")
+            with tqdm.tqdm(total=num_images, ncols=80) as pbar:
+                async with aiohttp.ClientSession(
+                    headers=self._get_auth_header()
+                ) as session:
+                    for i in range(num_batches):
+                        await batch_upload(
+                            session,
+                            images[
+                                i * batch_size : min((i + 1) * batch_size, num_images)
+                            ],
+                            task_id,
+                            pbar,
+                        )
+
+        asyncio.run(main())
 
     def download_data(self, task_id):
         """Download data from a task by id.
@@ -313,6 +319,31 @@ class UnitlabClient:
         )
         r.raise_for_status()
         return r.json()
+
+    def datasets(self):
+        """Get a list of all datasets.
+
+        Returns:
+            A list of all datasets.
+        """
+        r = self.api_session.get(ENPOINTS["datasets"], headers=self._get_auth_header())
+        r.raise_for_status()
+        return r.json()
+
+    def dataset(self, dataset_id):
+        """Get a dataset by id.
+
+        Args:
+            dataset_id: The id of the dataset.
+        Returns:
+            A dataset.
+        """
+        r = self.api_session.get(
+            ENPOINTS["dataset_detail"].format(dataset_id),
+            headers=self._get_auth_header(),
+        )
+        r.raise_for_status()
+        return r.json()["file"]
 
     def datasource_result(self, datasource_id):
         raise NotImplementedError

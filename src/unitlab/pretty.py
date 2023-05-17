@@ -149,3 +149,23 @@ def print_task_statistics(data):
     )
 
     print(table)
+
+
+def print_datasets(data):
+    table = ColorTable(theme=Themes.OCEAN)
+    table.field_names = [
+        "Dataset ID",
+        "AI Model",
+        "Number of Data",
+        "Public",
+    ]
+    for dataset in data:
+        table.add_row(
+            [
+                dataset["pk"],
+                dataset["ai_model"],
+                dataset["datasource_count"],
+                dataset["is_public"],
+            ]
+        )
+    print(table)

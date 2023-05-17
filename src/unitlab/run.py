@@ -50,8 +50,6 @@ def upload_data(
         Path, typer.Option(help="Directory containing the data to be uploaded")
     ],
 ):
-    if not os.path.isdir(directory):
-        raise typer.BadParameter(f"Directory {directory} does not exist")
     get_client(api_key).upload_data(task_id=str(pk), directory=directory)
 
 
@@ -73,6 +71,16 @@ def ai_models(api_key: API_KEY):
 @app.command(help="AI model")
 def ai_model(pk: UUID, api_key: API_KEY):
     pretty.print_ai_model(get_client(api_key).ai_model(pk), many=False)
+
+
+@app.command(help="Datasets")
+def datasets(api_key: API_KEY):
+    pretty.print_datasets(get_client(api_key).datasets())
+
+
+@app.command(help="Dataset")
+def dataset(pk: UUID, api_key: API_KEY):
+    print("File: ", get_client(api_key).dataset(pk))
 
 
 if __name__ == "__main__":
