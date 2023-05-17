@@ -36,6 +36,6 @@ setup(
         "Pillow",
     ],
     entry_points={
-        "console_scripts": ["unitlab=unitlab.run:main"],
+        "console_scripts": ["unitlab=unitlab.run:app"],
     },
 )

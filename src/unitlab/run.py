@@ -1,117 +1,79 @@
-import argparse
+import os
+from pathlib import Path
+from uuid import UUID
 
-from . import core
+import typer
+from typing_extensions import Annotated
+
+from . import pretty
+from .client import UnitlabClient
+
+app = typer.Typer()
+
+API_KEY = Annotated[str, typer.Option(help="The api-key obtained from unitlab.ai")]
 
 
-def main():
-    parser = argparse.ArgumentParser(
-        prog="unitlab",
-        description="Unitlab Inc. Python-SDK",
-        allow_abbrev=False,
-        epilog="For more information, please visit https://unitlab.ai",
-    )
-    subparsers = parser.add_subparsers(required=True)
+def get_client(api_key: str) -> UnitlabClient:
+    return UnitlabClient(api_key=api_key, check_connection=False)
 
-    # Task List
-    parser_task_list = subparsers.add_parser("tasks", help="Get task list")
-    parser_task_list.add_argument("-k", "--api_key", **core.api_key_template)
-    parser_task_list.set_defaults(func=core.task_list)
 
-    # Task Detail
-    parser_task_detail = subparsers.add_parser("task-detail", help="Get task detail")
-    parser_task_detail.add_argument(
-        "-id", "--uuid", type=core.validate_uuid, required=True, help="Task uuid"
-    )
-    parser_task_detail.add_argument("-k", "--api_key", **core.api_key_template)
-    parser_task_detail.set_defaults(func=core.task_detail)
+@app.command(help="Task list")
+def tasks(api_key: API_KEY):
+    pretty.print_task(get_client(api_key).task_list(), many=True)
 
-    # Task DataSources
-    parser_task_data_sources = subparsers.add_parser(
-        "task-data", help="Get task's datasources"
-    )
-    parser_task_data_sources.add_argument(
-        "-id", "--uuid", type=core.validate_uuid, required=True, help="Task uuid"
-    )
-    parser_task_data_sources.add_argument("-k", "--api_key", **core.api_key_template)
-    parser_task_data_sources.set_defaults(func=core.task_data_sources)
 
-    # Task Members
-    parser_task_members = subparsers.add_parser(
-        "task-members", help="Get task's members"
-    )
-    parser_task_members.add_argument(
-        "-id", "--uuid", type=core.validate_uuid, required=True, help="Task uuid"
-    )
-    parser_task_members.add_argument("-k", "--api_key", **core.api_key_template)
-    parser_task_members.set_defaults(func=core.task_members)
+@app.command(help="Task detail")
+def task(task_id: UUID, api_key: API_KEY):
+    pretty.print_task(get_client(api_key).task_detail(task_id=task_id), many=False)
 
-    # Task Statistics
-    parser_task_statistics = subparsers.add_parser(
-        "task-statistics", help="Get task's statistics"
-    )
-    parser_task_statistics.add_argument(
-        "-id", "--uuid", type=core.validate_uuid, required=True, help="Task uuid"
-    )
-    parser_task_statistics.add_argument("-k", "--api_key", **core.api_key_template)
-    parser_task_statistics.set_defaults(func=core.task_statistics)
 
-    # Task Upload DataSources
-    parser_task_upload_datasources = subparsers.add_parser(
-        "upload-data", help="Upload task datasources"
-    )
-    parser_task_upload_datasources.add_argument(
-        "-id", "--uuid", type=core.validate_uuid, required=True, help="Task uuid"
-    )
-    parser_task_upload_datasources.add_argument(
-        "-i", "--input_dir", help="The input directory", required=True
-    )
-    parser_task_upload_datasources.add_argument(
-        "-k", "--api_key", **core.api_key_template
-    )
-    parser_task_upload_datasources.set_defaults(func=core.task_upload_datasources)
+@app.command(help="Task datasources")
+def task_data(task_id: UUID, api_key: API_KEY):
+    pretty.print_data_sources(get_client(api_key).task_data(task_id=task_id))
 
-    # Task Download Labeled Data
-    parser_task_download_labeled_data = subparsers.add_parser(
-        "download-data", help="Download task labeled data"
-    )
-    parser_task_download_labeled_data.add_argument(
-        "-id", "--uuid", type=core.validate_uuid, required=True, help="Task uuid"
-    )
-    parser_task_download_labeled_data.add_argument(
-        "-k", "--api_key", **core.api_key_template
-    )
-    parser_task_download_labeled_data.set_defaults(func=core.task_download_data)
 
-    # DataSource Result
-    parser_datasource_result = subparsers.add_parser(
-        "datasource-result", help="Get datasource result"
-    )
-    parser_datasource_result.add_argument(
-        "-id", "--uuid", type=core.validate_uuid, required=True, help="DataSource uuid"
-    )
-    parser_datasource_result.add_argument("-k", "--api_key", **core.api_key_template)
-    parser_datasource_result.set_defaults(func=core.datasource_result)
+@app.command(help="Task members")
+def task_members(task_id: UUID, api_key: API_KEY):
+    pretty.print_members(get_client(api_key).task_members(task_id=task_id))
 
-    # AI Model List
-    parser_ai_model_list = subparsers.add_parser(
-        "ai-models", help="Get AI model list"
-    )
-    parser_ai_model_list.add_argument("-k", "--api_key", **core.api_key_template)
-    parser_ai_model_list.set_defaults(func=core.ai_model_list)
 
-    # AI Model Detail
-    parser_ai_model_detail = subparsers.add_parser(
-        "ai-model", help="Get AI model detail"
-    )
-    parser_ai_model_detail.add_argument(
-        "-id", "--uuid", type=core.validate_uuid, required=True, help="AI model uuid"
-    )
-    parser_ai_model_detail.add_argument("-k", "--api_key", **core.api_key_template)
-    parser_ai_model_detail.set_defaults(func=core.ai_model_detail)
+@app.command(help="Task statistics")
+def task_statistics(pk: UUID, api_key: API_KEY):
+    pretty.print_task_statistics(get_client(api_key).task_statistics(task_id=pk))
 
-    args = parser.parse_args()
-    args.func(args)
+
+@app.command(help="Upload data")
+def upload_data(
+    pk: UUID,
+    api_key: API_KEY,
+    directory: Annotated[
+        Path, typer.Option(help="Directory containing the data to be uploaded")
+    ],
+):
+    if not os.path.isdir(directory):
+        raise typer.BadParameter(f"Directory {directory} does not exist")
+    get_client(api_key).upload_data(task_id=str(pk), directory=directory)
+
+
+@app.command(help="Download data")
+def download_data(pk: UUID, api_key: API_KEY):
+    print("File:", get_client(api_key).download_data(task_id=pk))
+
+
+@app.command(help="Datasource result")
+def datasource_result(pk: UUID, api_key: API_KEY):
+    get_client(api_key).datasource_result(pk)
+
+
+@app.command(help="AI models")
+def ai_models(api_key: API_KEY):
+    pretty.print_ai_model(get_client(api_key).ai_models(), many=True)
+
+
+@app.command(help="AI model")
+def ai_model(pk: UUID, api_key: API_KEY):
+    pretty.print_ai_model(get_client(api_key).ai_model(pk), many=False)
 
 
 if __name__ == "__main__":
-    main()
+    app()

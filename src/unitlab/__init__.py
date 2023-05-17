@@ -1,3 +1,3 @@
-from unitlab.client import UnitlabClient
+from .client import UnitlabClient
 
 __all__ = ["UnitlabClient"]

@@ -8,8 +8,22 @@ import aiohttp
 import requests
 import tqdm
 
-from unitlab.core import BASE_URL, ENPOINTS
-from unitlab.exceptions import AuthenticationError, NetworkError
+from .exceptions import AuthenticationError, NetworkError
+
+BASE_URL = "https://api.unitlab.ai/api/cli"
+
+ENPOINTS = {
+    "ai_model_list": BASE_URL + "/task-parent/",
+    "ai_model_detail": BASE_URL + "/task-parent/{}/",
+    "task_list": BASE_URL + "/task/",
+    "task_detail": BASE_URL + "/task/{}/",
+    "task_data_sources": BASE_URL + "/task/{}/datasource/",
+    "task_members": BASE_URL + "/task/{}/members/",
+    "task_statistics": BASE_URL + "/task/{}/statistics/",
+    "task_upload_datasources": BASE_URL + "/task/upload-datasource/",
+    "task_download_data": BASE_URL + "/task/{}/download-data/",
+    "datasource_result": BASE_URL + "/datasource/{}/result/",
+}
 
 
 class UnitlabClient:
@@ -45,10 +59,7 @@ class UnitlabClient:
         :exc:`~unitlab.exceptions.AuthenticationError`: If an invalid API key is used or (when not passing the API key directly) if ``UNITLAB_API_KEY`` is not found in your environment.
     """
 
-    def __init__(
-        self,
-        api_key: str = None,
-    ):
+    def __init__(self, api_key: str = None, check_connection: bool = True):
         if api_key is None:
             api_key = os.getenv("UNITLAB_API_KEY")
             if api_key is None:
@@ -59,28 +70,24 @@ class UnitlabClient:
                 print("Found a Unitlab API key in your environment.")
 
         self.api_key = api_key
-
-        # https://realpython.com/python-requests/#performance
-        # https://stackoverflow.com/questions/21371809/cleanly-setting-max-retries-on-python-requests-get-or-post-method
-        # https://stackoverflow.com/questions/23013220/max-retries-exceeded-with-url-in-requests
         self.api_session = requests.Session()
         adapter = requests.adapters.HTTPAdapter(max_retries=3)
         self.api_session.mount("http://", adapter)
         self.api_session.mount("https://", adapter)
 
-        try:
-            r = self.api_session.get(
-                f"{BASE_URL}/api-status/", headers=self._get_auth_header()
-            )
-            r.raise_for_status()
-            if r.status_code == 200:
-                print("Successfully connected to the Unitlab.ai API.")
-        except NetworkError:
-            raise AuthenticationError(
-                message="Something went wrong. Did you use the right API key?"
-            )
+        if check_connection:
+            try:
+                r = self.api_session.get(
+                    f"{BASE_URL}/api-status/", headers=self._get_auth_header()
+                )
+                r.raise_for_status()
+                if r.status_code == 200:
+                    print("Successfully connected to the Unitlab.ai API.")
+            except NetworkError:
+                raise AuthenticationError(
+                    message="Something went wrong. Did you use the right API key?"
+                )
 
-    # https://stackoverflow.com/questions/48160728/resourcewarning-unclosed-socket-in-python-3-unit-test
     def close(self) -> None:
         """Close :class:`UnitlabClient` connections.
 
@@ -189,7 +196,7 @@ class UnitlabClient:
         r.raise_for_status()
         return r.json()
 
-    def task_upload_data(self, task_id, directory):
+    def upload_data(self, task_id, directory):
         """Upload data to a task by id.
 
         Args:
@@ -247,7 +254,7 @@ class UnitlabClient:
 
         asyncio.run(data_upload(directory, task_id))
 
-    def task_download_data(self, task_id):
+    def download_data(self, task_id):
         """Download data from a task by id.
 
         Args:
@@ -278,8 +285,9 @@ class UnitlabClient:
             with open(filename, "wb") as f:
                 for chunk in r.iter_content(chunk_size=1024 * 1024):
                     f.write(chunk)
+            return os.path.abspath(filename)
 
-    def ai_model_list(self):
+    def ai_models(self):
         """Get a list of all ai models.
 
         Returns:
@@ -291,7 +299,7 @@ class UnitlabClient:
         r.raise_for_status()
         return r.json()
 
-    def ai_model_detail(self, ai_model_id):
+    def ai_model(self, ai_model_id):
         """Get an ai model by id.
 
         Args:
@@ -305,3 +313,6 @@ class UnitlabClient:
         )
         r.raise_for_status()
         return r.json()
+
+    def datasource_result(self, datasource_id):
+        raise NotImplementedError

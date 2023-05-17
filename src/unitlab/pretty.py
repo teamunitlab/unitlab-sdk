@@ -141,10 +141,10 @@ def print_task_statistics(data):
             data["total_data"],
             data["labeler_progress"],
             data["reviewer_progress"],
-            timedelta(seconds=data["labeler_average_time"]),
-            timedelta(seconds=data["reviewer_average_time"]),
-            timedelta(seconds=data["labeler_overall_time"]),
-            timedelta(seconds=data["reviewer_overall_time"]),
+            timedelta(seconds=data["labeler_average_time"] or 0),
+            timedelta(seconds=data["reviewer_average_time"] or 0),
+            timedelta(seconds=data["labeler_overall_time"] or 0),
+            timedelta(seconds=data["reviewer_overall_time"] or 0),
         ]
     )
 
