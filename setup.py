@@ -2,7 +2,7 @@ from setuptools import find_packages, setup
 
 setup(
     name="unitlab",
-    version="1.8.1",
+    version="1.8.3",
     license="MIT",
     author="Unitlab Inc.",
     author_email="team@unitlab.ai",
@@ -10,9 +10,6 @@ setup(
     include_package_data=True,
     package_data={"static": ["*"], "Potato": ["*.so"]},
     classifiers=[
-        #   3 - Alpha
-        #   4 - Beta
-        #   5 - Production/Stable
         "Development Status :: 4 - Beta",
         "Intended Audience :: Developers",
         "License :: OSI Approved :: MIT License",
