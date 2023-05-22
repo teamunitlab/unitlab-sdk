@@ -10,6 +10,25 @@
     </a>
 </p>
 
-Unitlab Inc. 
+[Unitlab.ai](https://unitlab.ai/) is an AI-driven data annotation platform that automates the collection of raw data, facilitating collaboration with human annotators to produce highly accurate labels for your machine learning models. With our service, you can optimize work efficiency, improve data quality, and reduce costs.
 
-Easy and straightforward data annotation platform for any business or company to leverage AI models with powerful data. To achieve this, Unitlab provides the best service to rely on AI-powered tools and industry-level annotators with state-of-the-art models surpassing any open-source or alternative. Our mission is to ease and automate the platform for everybody. Unitlab serves a huge workspace to provide hiring labelers that make any scale of the projects. We aim to truly change the nature of our society for the better.
+
+
+## Quickstart 
+Follow [the quickstart guide for the Python SDK](https://docs.unitlab.ai/cli-python-sdk/python-sdk).
+
+## Documentation 
+[The documentation](https://docs.unitlab.ai/) provides comprehensive instructions on how to utilize the Unilab SDK effectively.
+
+## Installation
+To get started with the Unitlab.ai CLI/Python SDK, you'll need to install it using pip:
+
+`pip install --upgrade unitlab`
+
+Once you have successfully installed the Unitlab package, you can conveniently handle all tasks using the terminal.
+
+[This tutorial](https://docs.unitlab.ai/cli-python-sdk/cli) walks you through the most common CLI commands.
+
+## More about Unitlab
+To learn more about our platform and Unitlab's products, please [visit our website](https://unitlab.ai/).
+
