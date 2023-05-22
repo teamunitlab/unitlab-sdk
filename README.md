@@ -14,12 +14,6 @@
 
 ![](https://github.com/teamunitlab/unitlab-sdk/blob/main/assets/unitlabDoc.png)
 
-## Quickstart 
-Follow [the quickstart guide for the Python SDK](https://docs.unitlab.ai/cli-python-sdk/python-sdk).
-
-## Documentation 
-[The documentation](https://docs.unitlab.ai/) provides comprehensive instructions on how to utilize the Unilab SDK effectively.
-
 ## Installation
 To get started with the Unitlab.ai CLI/Python SDK, you'll need to install it using pip:
 
@@ -28,6 +22,14 @@ To get started with the Unitlab.ai CLI/Python SDK, you'll need to install it usi
 Once you have successfully installed the Unitlab package, you can conveniently handle all tasks using the terminal.
 
 [This tutorial](https://docs.unitlab.ai/cli-python-sdk/cli) walks you through the most common CLI commands.
+
+## Quickstart 
+Follow [the quickstart guide for the Python SDK](https://docs.unitlab.ai/cli-python-sdk/python-sdk).
+
+
+## Documentation 
+[The documentation](https://docs.unitlab.ai/) provides comprehensive instructions on how to utilize the Unilab SDK effectively.
+
 
 ## More about Unitlab
 To learn more about our platform and Unitlab's products, please [visit our website](https://unitlab.ai/).
