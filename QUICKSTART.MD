@@ -9,7 +9,7 @@ Import the necessary packages, and initialize the Unitlab client using your API 
     client = UnitlabClient(api_key)
 
 
-Let's get a list of your tasks programmatically using client.task_list().
+Let's get a list of your tasks programmatically using client.tasks().
 Note that this list will be retrieved under the user account corresponding to the API key.
 #Result:
     [{'pk': '0ed69772-fd28-471b-b91c-2a57368c0dfb', 'name': '', 'parent_name': None, 'invoice': {'price': '0.00', 'images': 0}, 'annotator_progress': 0.0, 'reviewer_progress': 0.0, 'creator': 'user@gmail.com', 'created': '2023-04-11T11:00:23.737326+05:00'}, {'pk': '34738aec-b69b-4d30-9763-653017a68c02', 'name': 'human', 'parent_name': 'Red Blood Cell', 'invoice': {'price': '100.00', 'images': 1}, 'annotator_progress': 0.0, 'reviewer_progress': 0.0, 'creator': 'user@gmail.com', 'created': '2023-04-11T16:57:01.767677+05:00'},]

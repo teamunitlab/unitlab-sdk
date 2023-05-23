@@ -8,27 +8,23 @@ import aiohttp
 import requests
 import tqdm
 
-from .exceptions import AuthenticationError, NetworkError
+from .exceptions import AuthenticationError
 
-BASE_URL = "https://api-dev.unitlab.ai/api/cli"
+BASE_URL = "https://api.unitlab.ai/api/cli/"
 
 ENPOINTS = {
-    "ai_model_list": BASE_URL + "/task-parent/",
-    "ai_model_detail": BASE_URL + "/task-parent/{}/",
-    "task_list": BASE_URL + "/task/",
-    "task_detail": BASE_URL + "/task/{}/",
-    "task_data_sources": BASE_URL + "/task/{}/datasource/",
-    "task_members": BASE_URL + "/task/{}/members/",
-    "task_statistics": BASE_URL + "/task/{}/statistics/",
-    "task_upload_datasources": BASE_URL + "/task/upload-datasource/",
-    "task_download_data": BASE_URL + "/task/{}/download-data/",
-    "datasource_result": BASE_URL + "/datasource/{}/result/",
-    "datasets": BASE_URL + "/datasets/",
-    "dataset_detail": BASE_URL + "/datasets/{}/",
+    "ai_models": BASE_URL + "ai-models/",
+    "ai_model": BASE_URL + "ai-model/{}/",
+    "tasks": BASE_URL + "tasks/",
+    "task": BASE_URL + "tasks/{}/",
+    "task_datasources": BASE_URL + "tasks/{}/datasources/",
+    "task_members": BASE_URL + "tasks/{}/members/",
+    "task_statistics": BASE_URL + "tasks/{}/statistics/",
+    "upload_data": BASE_URL + "upload-data/",
+    "download_data": BASE_URL + "tasks/{}/download-data/",
+    "datasets": BASE_URL + "datasets/",
+    "dataset": BASE_URL + "datasets/{}/",
 }
-
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
 
 
 class UnitlabClient:
@@ -64,32 +60,19 @@ class UnitlabClient:
         :exc:`~unitlab.exceptions.AuthenticationError`: If an invalid API key is used or (when not passing the API key directly) if ``UNITLAB_API_KEY`` is not found in your environment.
     """
 
-    def __init__(self, api_key: str = None, check_connection: bool = True):
+    def __init__(self, api_key: str = None):
         if api_key is None:
             api_key = os.getenv("UNITLAB_API_KEY")
             if api_key is None:
                 raise AuthenticationError(
                     message="Please provide the api_key argument or set UNITLAB_API_KEY in your environment."
                 )
-            logger.info("Found a Unitlab API key in your environment.")
-
+            logging.info("Found a Unitlab API key in your environment.")
         self.api_key = api_key
         self.api_session = requests.Session()
         adapter = requests.adapters.HTTPAdapter(max_retries=3)
         self.api_session.mount("http://", adapter)
         self.api_session.mount("https://", adapter)
-        if check_connection:
-            try:
-                r = self.api_session.get(
-                    f"{BASE_URL}/api-status/", headers=self._get_auth_header()
-                )
-                r.raise_for_status()
-                if r.status_code == 200:
-                    logger.info("Successfully connected to the Unitlab.ai API.")
-            except NetworkError:
-                raise AuthenticationError(
-                    message="Something went wrong. Did you use the right API key?"
-                )
 
     def close(self) -> None:
         """Close :class:`UnitlabClient` connections.
@@ -99,7 +82,7 @@ class UnitlabClient:
         .. code-block:: python
 
             client = UnitlabClient()
-            client.task_list()
+            client.tasks()
             client.close()
 
         Or use the client as a context manager:
@@ -107,7 +90,7 @@ class UnitlabClient:
         .. code-block:: python
 
             with UnitlabClient() as client:
-                client.task_list()
+                client.tasks()
         """
         self.api_session.close()
 
@@ -122,20 +105,20 @@ class UnitlabClient:
     ) -> None:
         self.close()
 
-    def _get_auth_header(self):
+    def _get_headers(self):
         return {"Authorization": f"Api-Key {self.api_key}"} if self.api_key else None
 
-    def task_list(self):
+    def tasks(self):
         """Get a list of all tasks.
 
         Returns:
             A list of all tasks.
         """
-        r = self.api_session.get(ENPOINTS["task_list"], headers=self._get_auth_header())
+        r = self.api_session.get(ENPOINTS["tasks"], headers=self._get_headers())
         r.raise_for_status()
         return r.json()
 
-    def task_detail(self, task_id):
+    def task(self, task_id):
         """Get a task by id.
 
         Args:
@@ -144,8 +127,8 @@ class UnitlabClient:
             A task.
         """
         r = self.api_session.get(
-            ENPOINTS["task_detail"].format(task_id),
-            headers=self._get_auth_header(),
+            ENPOINTS["task"].format(task_id),
+            headers=self._get_headers(),
         )
         r.raise_for_status()
         return r.json()
@@ -159,8 +142,8 @@ class UnitlabClient:
             The data of a task.
         """
         r = self.api_session.get(
-            ENPOINTS["task_data_sources"].format(task_id),
-            headers=self._get_auth_header(),
+            ENPOINTS["task_datasources"].format(task_id),
+            headers=self._get_headers(),
         )
         r.raise_for_status()
         return r.json()
@@ -175,7 +158,7 @@ class UnitlabClient:
         """
         r = self.api_session.get(
             ENPOINTS["task_members"].format(task_id),
-            headers=self._get_auth_header(),
+            headers=self._get_headers(),
         )
         r.raise_for_status()
         return r.json()
@@ -190,7 +173,7 @@ class UnitlabClient:
         """
         r = self.api_session.get(
             ENPOINTS["task_statistics"].format(task_id),
-            headers=self._get_auth_header(),
+            headers=self._get_headers(),
         )
         r.raise_for_status()
         return r.json()
@@ -214,12 +197,12 @@ class UnitlabClient:
                 try:
                     response = await session.request(
                         "POST",
-                        url=ENPOINTS["task_upload_datasources"],
+                        url=ENPOINTS["upload_data"],
                         data=aiohttp.FormData(fields={"task": task_id, "image": img}),
                     )
                     return 1 if response.status == 201 else 0
                 except Exception as e:
-                    logger.error(f"Error uploading image {image} - {e}")
+                    logging.error(f"Error uploading image {image} - {e}")
                     return 0
 
         async def batch_upload(
@@ -243,10 +226,10 @@ class UnitlabClient:
             num_images = len(images)
             num_batches = (num_images + batch_size - 1) // batch_size
 
-            logger.info(f"Uploading {num_images} images to task {task_id}")
+            logging.info(f"Uploading {num_images} images to task {task_id}")
             with tqdm.tqdm(total=num_images, ncols=80) as pbar:
                 async with aiohttp.ClientSession(
-                    headers=self._get_auth_header()
+                    headers=self._get_headers()
                 ) as session:
                     for i in range(num_batches):
                         await batch_upload(
@@ -269,8 +252,8 @@ class UnitlabClient:
             Writes the data to a json file.
         """
         response = self.api_session.get(
-            url=ENPOINTS["task_download_data"].format(task_id),
-            headers=self._get_auth_header(),
+            url=ENPOINTS["download_data"].format(task_id),
+            headers=self._get_headers(),
         )
         response.raise_for_status()
         with self.api_session.get(
@@ -291,7 +274,6 @@ class UnitlabClient:
             with open(filename, "wb") as f:
                 for chunk in r.iter_content(chunk_size=1024 * 1024):
                     f.write(chunk)
-            return os.path.abspath(filename)
 
     def ai_models(self):
         """Get a list of all ai models.
@@ -299,9 +281,7 @@ class UnitlabClient:
         Returns:
             A list of all ai models.
         """
-        r = self.api_session.get(
-            ENPOINTS["ai_model_list"], headers=self._get_auth_header()
-        )
+        r = self.api_session.get(ENPOINTS["ai_models"], headers=self._get_headers())
         r.raise_for_status()
         return r.json()
 
@@ -314,8 +294,8 @@ class UnitlabClient:
             An ai model.
         """
         r = self.api_session.get(
-            ENPOINTS["ai_model_detail"].format(ai_model_id),
-            headers=self._get_auth_header(),
+            ENPOINTS["ai_model"].format(ai_model_id),
+            headers=self._get_headers(),
         )
         r.raise_for_status()
         return r.json()
@@ -326,24 +306,39 @@ class UnitlabClient:
         Returns:
             A list of all datasets.
         """
-        r = self.api_session.get(ENPOINTS["datasets"], headers=self._get_auth_header())
+        r = self.api_session.get(ENPOINTS["datasets"], headers=self._get_headers())
         r.raise_for_status()
         return r.json()
 
     def dataset(self, dataset_id):
-        """Get a dataset by id.
+        """Download a dataset by id.
 
         Args:
             dataset_id: The id of the dataset.
         Returns:
-            A dataset.
+            Writes the data to a json file.
         """
-        r = self.api_session.get(
-            ENPOINTS["dataset_detail"].format(dataset_id),
-            headers=self._get_auth_header(),
+        response = self.api_session.get(
+            url=ENPOINTS["dataset"].format(dataset_id),
+            headers=self._get_headers(),
         )
-        r.raise_for_status()
-        return r.json()["file"]
+        response.raise_for_status()
+        with self.api_session.get(
+            url=response.json()["file"],
+            stream=True,
+        ) as r:
+            r.raise_for_status()
+            if "Content-Disposition" in r.headers.keys():
+                content_disposition = r.headers["Content-Disposition"]
+                filename_match = re.search('filename="(.+)"', content_disposition)
+                if filename_match:
+                    filename = filename_match.group(1)
+                else:
+                    filename = f"dataset-{dataset_id}.json"
+            else:
+                filename = f"dataset-{dataset_id}.json"
 
-    def datasource_result(self, datasource_id):
-        raise NotImplementedError
+            with open(filename, "wb") as f:
+                for chunk in r.iter_content(chunk_size=1024 * 1024):
+                    f.write(chunk)
+        return os.path.abspath(filename)

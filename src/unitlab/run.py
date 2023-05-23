@@ -1,4 +1,4 @@
-import os
+import logging
 from pathlib import Path
 from uuid import UUID
 
@@ -8,28 +8,34 @@ from typing_extensions import Annotated
 from . import pretty
 from .client import UnitlabClient
 
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+)
+
 app = typer.Typer()
 
 API_KEY = Annotated[str, typer.Option(help="The api-key obtained from unitlab.ai")]
 
 
 def get_client(api_key: str) -> UnitlabClient:
-    return UnitlabClient(api_key=api_key, check_connection=False)
+    return UnitlabClient(api_key=api_key)
 
 
 @app.command(help="Task list")
 def tasks(api_key: API_KEY):
-    pretty.print_task(get_client(api_key).task_list(), many=True)
+    pretty.print_task(get_client(api_key).tasks(), many=True)
 
 
 @app.command(help="Task detail")
 def task(task_id: UUID, api_key: API_KEY):
-    pretty.print_task(get_client(api_key).task_detail(task_id=task_id), many=False)
+    pretty.print_task(get_client(api_key).task(task_id=task_id), many=False)
 
 
 @app.command(help="Task datasources")
 def task_data(task_id: UUID, api_key: API_KEY):
-    pretty.print_data_sources(get_client(api_key).task_data(task_id=task_id))
+    pretty.print_datasources(get_client(api_key).task_data(task_id=task_id))
 
 
 @app.command(help="Task members")
@@ -55,12 +61,7 @@ def upload_data(
 
 @app.command(help="Download data")
 def download_data(pk: UUID, api_key: API_KEY):
-    print("File:", get_client(api_key).download_data(task_id=pk))
-
-
-@app.command(help="Datasource result")
-def datasource_result(pk: UUID, api_key: API_KEY):
-    get_client(api_key).datasource_result(pk)
+    logging.info(f"File: {get_client(api_key).download_data(task_id=pk)}")
 
 
 @app.command(help="AI models")
@@ -80,7 +81,7 @@ def datasets(api_key: API_KEY):
 
 @app.command(help="Dataset")
 def dataset(pk: UUID, api_key: API_KEY):
-    print("File: ", get_client(api_key).dataset(pk))
+    logging.info(f"File: {get_client(api_key).dataset(pk)}")
 
 
 if __name__ == "__main__":

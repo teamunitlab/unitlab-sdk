@@ -83,7 +83,7 @@ def print_task(data, many=False):
     print(table)
 
 
-def print_data_sources(data):
+def print_datasources(data):
     table = ColorTable(theme=Themes.OCEAN)
     table.field_names = [
         "Data Source ID",
