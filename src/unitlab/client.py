@@ -11,19 +11,21 @@ import tqdm
 from .exceptions import AuthenticationError
 
 BASE_URL = "https://api.unitlab.ai/api/cli/"
+SDK_URL = BASE_URL + "/api/sdk/"
 
-ENPOINTS = {
-    "ai_models": BASE_URL + "ai-models/",
-    "ai_model": BASE_URL + "ai-model/{}/",
-    "tasks": BASE_URL + "tasks/",
-    "task": BASE_URL + "tasks/{}/",
-    "task_datasources": BASE_URL + "tasks/{}/datasources/",
-    "task_members": BASE_URL + "tasks/{}/members/",
-    "task_statistics": BASE_URL + "tasks/{}/statistics/",
-    "upload_data": BASE_URL + "upload-data/",
-    "download_data": BASE_URL + "tasks/{}/download-data/",
-    "datasets": BASE_URL + "datasets/",
-    "dataset": BASE_URL + "datasets/{}/",
+
+SDK_ENPOINTS = {
+    "ai_models": SDK_URL + "ai-models/",
+    "ai_model": SDK_URL + "ai-model/{}/",
+    "tasks": SDK_URL + "tasks/",
+    "task": SDK_URL + "tasks/{}/",
+    "task_datasources": SDK_URL + "tasks/{}/datasources/",
+    "task_members": SDK_URL + "tasks/{}/members/",
+    "task_statistics": SDK_URL + "tasks/{}/statistics/",
+    "upload_data": SDK_URL + "upload-data/",
+    "download_data": SDK_URL + "tasks/{}/download-data/",
+    "datasets": SDK_URL + "datasets/",
+    "dataset": SDK_URL + "datasets/{}/",
 }
 
 
@@ -114,7 +116,7 @@ class UnitlabClient:
         Returns:
             A list of all tasks.
         """
-        r = self.api_session.get(ENPOINTS["tasks"], headers=self._get_headers())
+        r = self.api_session.get(SDK_ENPOINTS["tasks"], headers=self._get_headers())
         r.raise_for_status()
         return r.json()
 
@@ -127,7 +129,7 @@ class UnitlabClient:
             A task.
         """
         r = self.api_session.get(
-            ENPOINTS["task"].format(task_id),
+            SDK_ENPOINTS["task"].format(task_id),
             headers=self._get_headers(),
         )
         r.raise_for_status()
@@ -142,7 +144,7 @@ class UnitlabClient:
             The data of a task.
         """
         r = self.api_session.get(
-            ENPOINTS["task_datasources"].format(task_id),
+            SDK_ENPOINTS["task_datasources"].format(task_id),
             headers=self._get_headers(),
         )
         r.raise_for_status()
@@ -157,7 +159,7 @@ class UnitlabClient:
             The members of a task.
         """
         r = self.api_session.get(
-            ENPOINTS["task_members"].format(task_id),
+            SDK_ENPOINTS["task_members"].format(task_id),
             headers=self._get_headers(),
         )
         r.raise_for_status()
@@ -172,7 +174,7 @@ class UnitlabClient:
             The statistics of a task.
         """
         r = self.api_session.get(
-            ENPOINTS["task_statistics"].format(task_id),
+            SDK_ENPOINTS["task_statistics"].format(task_id),
             headers=self._get_headers(),
         )
         r.raise_for_status()
@@ -197,7 +199,7 @@ class UnitlabClient:
                 try:
                     response = await session.request(
                         "POST",
-                        url=ENPOINTS["upload_data"],
+                        url=SDK_ENPOINTS["upload_data"],
                         data=aiohttp.FormData(fields={"task": task_id, "image": img}),
                     )
                     return 1 if response.status == 201 else 0
@@ -252,7 +254,7 @@ class UnitlabClient:
             Writes the data to a json file.
         """
         response = self.api_session.get(
-            url=ENPOINTS["download_data"].format(task_id),
+            url=SDK_ENPOINTS["download_data"].format(task_id),
             headers=self._get_headers(),
         )
         response.raise_for_status()
@@ -281,7 +283,7 @@ class UnitlabClient:
         Returns:
             A list of all ai models.
         """
-        r = self.api_session.get(ENPOINTS["ai_models"], headers=self._get_headers())
+        r = self.api_session.get(SDK_ENPOINTS["ai_models"], headers=self._get_headers())
         r.raise_for_status()
         return r.json()
 
@@ -294,7 +296,7 @@ class UnitlabClient:
             An ai model.
         """
         r = self.api_session.get(
-            ENPOINTS["ai_model"].format(ai_model_id),
+            SDK_ENPOINTS["ai_model"].format(ai_model_id),
             headers=self._get_headers(),
         )
         r.raise_for_status()
@@ -306,7 +308,7 @@ class UnitlabClient:
         Returns:
             A list of all datasets.
         """
-        r = self.api_session.get(ENPOINTS["datasets"], headers=self._get_headers())
+        r = self.api_session.get(SDK_ENPOINTS["datasets"], headers=self._get_headers())
         r.raise_for_status()
         return r.json()
 
@@ -319,7 +321,7 @@ class UnitlabClient:
             Writes the data to a json file.
         """
         response = self.api_session.get(
-            url=ENPOINTS["dataset"].format(dataset_id),
+            url=SDK_ENPOINTS["dataset"].format(dataset_id),
             headers=self._get_headers(),
         )
         response.raise_for_status()

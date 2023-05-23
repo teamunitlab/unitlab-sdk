@@ -2,7 +2,7 @@ from setuptools import find_packages, setup
 
 setup(
     name="unitlab",
-    version="1.8.4",
+    version="1.8.5",
     license="MIT",
     author="Unitlab Inc.",
     author_email="team@unitlab.ai",
@@ -28,7 +28,6 @@ setup(
         "numpy",
         "opencv-python",
         "Pillow",
-        "prettytable",
         "requests",
         "tqdm",
         "typer",

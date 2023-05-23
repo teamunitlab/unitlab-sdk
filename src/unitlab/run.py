@@ -5,14 +5,8 @@ from uuid import UUID
 import typer
 from typing_extensions import Annotated
 
-from . import pretty
+from . import cli
 from .client import UnitlabClient
-
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(message)s",
-    datefmt="%Y-%m-%d %H:%M:%S",
-)
 
 app = typer.Typer()
 
@@ -25,27 +19,27 @@ def get_client(api_key: str) -> UnitlabClient:
 
 @app.command(help="Task list")
 def tasks(api_key: API_KEY):
-    pretty.print_task(get_client(api_key).tasks(), many=True)
+    cli.tasks(api_key)
 
 
 @app.command(help="Task detail")
-def task(task_id: UUID, api_key: API_KEY):
-    pretty.print_task(get_client(api_key).task(task_id=task_id), many=False)
+def task(pk: UUID, api_key: API_KEY):
+    cli.task(api_key, pk)
 
 
 @app.command(help="Task datasources")
-def task_data(task_id: UUID, api_key: API_KEY):
-    pretty.print_datasources(get_client(api_key).task_data(task_id=task_id))
+def task_data(pk: UUID, api_key: API_KEY):
+    cli.task_data(api_key, pk)
 
 
 @app.command(help="Task members")
-def task_members(task_id: UUID, api_key: API_KEY):
-    pretty.print_members(get_client(api_key).task_members(task_id=task_id))
+def task_members(pk: UUID, api_key: API_KEY):
+    cli.task_members(api_key, pk)
 
 
 @app.command(help="Task statistics")
 def task_statistics(pk: UUID, api_key: API_KEY):
-    pretty.print_task_statistics(get_client(api_key).task_statistics(task_id=pk))
+    cli.task_statistics(api_key, pk)
 
 
 @app.command(help="Upload data")
@@ -56,27 +50,27 @@ def upload_data(
         Path, typer.Option(help="Directory containing the data to be uploaded")
     ],
 ):
-    get_client(api_key).upload_data(task_id=str(pk), directory=directory)
+    get_client(api_key).upload_data(str(pk), directory=directory)
 
 
 @app.command(help="Download data")
 def download_data(pk: UUID, api_key: API_KEY):
-    logging.info(f"File: {get_client(api_key).download_data(task_id=pk)}")
+    logging.info(f"File: {get_client(api_key).download_data(pk)}")
 
 
 @app.command(help="AI models")
 def ai_models(api_key: API_KEY):
-    pretty.print_ai_model(get_client(api_key).ai_models(), many=True)
+    cli.ai_models(api_key)
 
 
 @app.command(help="AI model")
 def ai_model(pk: UUID, api_key: API_KEY):
-    pretty.print_ai_model(get_client(api_key).ai_model(pk), many=False)
+    cli.ai_model(api_key, pk)
 
 
 @app.command(help="Datasets")
 def datasets(api_key: API_KEY):
-    pretty.print_datasets(get_client(api_key).datasets())
+    cli.datasets(api_key)
 
 
 @app.command(help="Dataset")
