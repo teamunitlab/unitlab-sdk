@@ -10,7 +10,7 @@ import tqdm
 
 from .exceptions import AuthenticationError
 
-BASE_URL = "https://api.unitlab.ai/api/cli/"
+BASE_URL = os.environ.get("UNITLAB_BASE_URL", "https://api.unitlab.ai")
 SDK_URL = BASE_URL + "/api/sdk/"
 
 
@@ -202,6 +202,7 @@ class UnitlabClient:
                         url=SDK_ENPOINTS["upload_data"],
                         data=aiohttp.FormData(fields={"task": task_id, "image": img}),
                     )
+                    response.raise_for_status()
                     return 1 if response.status == 201 else 0
                 except Exception as e:
                     logging.error(f"Error uploading image {image} - {e}")
@@ -221,11 +222,21 @@ class UnitlabClient:
                 image
                 for images_list in (
                     glob.glob(os.path.join(directory, "") + extension)
-                    for extension in ["*jpg", "*png"]
+                    for extension in ["*jpg", "*png", "*jpeg", "*webp"]
                 )
                 for image in images_list
             ]
-            num_images = len(images)
+            filtered_images = []
+            for image in images:
+                file_size = os.path.getsize(image) / 1024 / 1024
+                if file_size > 6:
+                    logging.warning(
+                        f"Image {image} is too large ({file_size:.4f} megabytes) skipping, max size is 6 MB"
+                    )
+                    continue
+                filtered_images.append(image)
+
+            num_images = len(filtered_images)
             num_batches = (num_images + batch_size - 1) // batch_size
 
             logging.info(f"Uploading {num_images} images to task {task_id}")
@@ -236,7 +247,7 @@ class UnitlabClient:
                     for i in range(num_batches):
                         await batch_upload(
                             session,
-                            images[
+                            filtered_images[
                                 i * batch_size : min((i + 1) * batch_size, num_images)
                             ],
                             task_id,
