@@ -32,9 +32,9 @@ def task_data(pk: UUID, api_key: API_KEY):
     cli.task_data(api_key, pk)
 
 
-@app.command(help="Task members")
-def task_members(pk: UUID, api_key: API_KEY):
-    cli.task_members(api_key, pk)
+@app.command(help="Task workers")
+def task_workers(pk: UUID, api_key: API_KEY):
+    cli.task_workers(api_key, pk)
 
 
 @app.command(help="Task statistics")

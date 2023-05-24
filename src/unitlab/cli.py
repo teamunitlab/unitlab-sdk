@@ -10,7 +10,7 @@ CLI_ENPOINTS = {
     "tasks": CLI_URL + "tasks/",
     "task": CLI_URL + "tasks/{}/",
     "task_datasources": CLI_URL + "tasks/{}/datasources/",
-    "task_members": CLI_URL + "tasks/{}/members/",
+    "task_workers": CLI_URL + "tasks/{}/workers/",
     "task_statistics": CLI_URL + "tasks/{}/statistics/",
     "datasets": CLI_URL + "datasets/",
 }
@@ -42,9 +42,9 @@ def task_data(api_key, task_id):
     print(response.json())
 
 
-def task_members(api_key, task_id):
+def task_workers(api_key, task_id):
     response = requests.get(
-        CLI_ENPOINTS["task_members"].format(task_id), headers=get_headers(api_key)
+        CLI_ENPOINTS["task_workers"].format(task_id), headers=get_headers(api_key)
     )
     response.raise_for_status()
     print(response.json())

@@ -20,7 +20,7 @@ SDK_ENPOINTS = {
     "tasks": SDK_URL + "tasks/",
     "task": SDK_URL + "tasks/{}/",
     "task_datasources": SDK_URL + "tasks/{}/datasources/",
-    "task_members": SDK_URL + "tasks/{}/members/",
+    "task_workers": SDK_URL + "tasks/{}/workers/",
     "task_statistics": SDK_URL + "tasks/{}/statistics/",
     "upload_data": SDK_URL + "upload-data/",
     "download_data": SDK_URL + "tasks/{}/download-data/",
@@ -150,16 +150,16 @@ class UnitlabClient:
         r.raise_for_status()
         return r.json()
 
-    def task_members(self, task_id):
-        """Get the members of a task by id.
+    def task_workers(self, task_id):
+        """Get the workers of a task by id.
 
         Args:
             task_id: The id of the task.
         Returns:
-            The members of a task.
+            The workers of a task.
         """
         r = self.api_session.get(
-            SDK_ENPOINTS["task_members"].format(task_id),
+            SDK_ENPOINTS["task_workers"].format(task_id),
             headers=self._get_headers(),
         )
         r.raise_for_status()
@@ -287,6 +287,7 @@ class UnitlabClient:
             with open(filename, "wb") as f:
                 for chunk in r.iter_content(chunk_size=1024 * 1024):
                     f.write(chunk)
+        return os.path.abspath(filename)
 
     def ai_models(self):
         """Get a list of all ai models.
