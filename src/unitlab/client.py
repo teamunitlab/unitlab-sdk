@@ -9,24 +9,7 @@ import requests
 import tqdm
 
 from .exceptions import AuthenticationError
-
-BASE_URL = os.environ.get("UNITLAB_BASE_URL", "https://api.unitlab.ai")
-SDK_URL = BASE_URL + "/api/sdk/"
-
-
-SDK_ENPOINTS = {
-    "ai_models": SDK_URL + "ai-models/",
-    "ai_model": SDK_URL + "ai-model/{}/",
-    "tasks": SDK_URL + "tasks/",
-    "task": SDK_URL + "tasks/{}/",
-    "task_datasources": SDK_URL + "tasks/{}/datasources/",
-    "task_workers": SDK_URL + "tasks/{}/workers/",
-    "task_statistics": SDK_URL + "tasks/{}/statistics/",
-    "upload_data": SDK_URL + "upload-data/",
-    "download_data": SDK_URL + "tasks/{}/download-data/",
-    "datasets": SDK_URL + "datasets/",
-    "dataset": SDK_URL + "datasets/{}/",
-}
+from .utils import ENDPOINTS, send_request
 
 
 class UnitlabClient:
@@ -116,9 +99,15 @@ class UnitlabClient:
         Returns:
             A list of all tasks.
         """
-        r = self.api_session.get(SDK_ENPOINTS["tasks"], headers=self._get_headers())
-        r.raise_for_status()
-        return r.json()
+        response = send_request(
+            {
+                "method": "GET",
+                "endpoint": ENDPOINTS["tasks"],
+                "headers": self._get_headers(),
+            },
+            session=self.api_session,
+        )
+        return response.json()
 
     def task(self, task_id):
         """Get a task by id.
@@ -128,12 +117,15 @@ class UnitlabClient:
         Returns:
             A task.
         """
-        r = self.api_session.get(
-            SDK_ENPOINTS["task"].format(task_id),
-            headers=self._get_headers(),
+        response = send_request(
+            {
+                "method": "GET",
+                "endpoint": ENDPOINTS["task"].format(task_id),
+                "headers": self._get_headers(),
+            },
+            session=self.api_session,
         )
-        r.raise_for_status()
-        return r.json()
+        return response.json()
 
     def task_data(self, task_id):
         """Get the data of a task by id.
@@ -143,12 +135,15 @@ class UnitlabClient:
         Returns:
             The data of a task.
         """
-        r = self.api_session.get(
-            SDK_ENPOINTS["task_datasources"].format(task_id),
-            headers=self._get_headers(),
+        response = send_request(
+            {
+                "method": "GET",
+                "endpoint": ENDPOINTS["task_datasources"].format(task_id),
+                "headers": self._get_headers(),
+            },
+            session=self.api_session,
         )
-        r.raise_for_status()
-        return r.json()
+        return response.json()
 
     def task_workers(self, task_id):
         """Get the workers of a task by id.
@@ -158,12 +153,15 @@ class UnitlabClient:
         Returns:
             The workers of a task.
         """
-        r = self.api_session.get(
-            SDK_ENPOINTS["task_workers"].format(task_id),
-            headers=self._get_headers(),
+        response = send_request(
+            {
+                "method": "GET",
+                "endpoint": ENDPOINTS["task_workers"].format(task_id),
+                "headers": self._get_headers(),
+            },
+            session=self.api_session,
         )
-        r.raise_for_status()
-        return r.json()
+        return response.json()
 
     def task_statistics(self, task_id):
         """Get the statistics of a task by id.
@@ -173,12 +171,15 @@ class UnitlabClient:
         Returns:
             The statistics of a task.
         """
-        r = self.api_session.get(
-            SDK_ENPOINTS["task_statistics"].format(task_id),
-            headers=self._get_headers(),
+        response = send_request(
+            {
+                "method": "GET",
+                "endpoint": ENDPOINTS["task_statistics"].format(task_id),
+                "headers": self._get_headers(),
+            },
+            session=self.api_session,
         )
-        r.raise_for_status()
-        return r.json()
+        return response.json()
 
     def upload_data(self, task_id, directory, batch_size=100):
         """Upload data to a task by id.
@@ -194,12 +195,23 @@ class UnitlabClient:
         if not os.path.isdir(directory):
             raise ValueError(f"Directory {directory} does not exist")
 
+        # set correct host
+        send_request(
+            {
+                "method": "GET",
+                "endpoint": "check",
+                "headers": self._get_headers(),
+            },
+            session=self.api_session,
+        )
+        URL = os.environ["UNITLAB_BASE_URL"] + ENDPOINTS["upload_data"]
+
         async def post_image(session: aiohttp.ClientSession, image: str, task_id: str):
             with open(image, "rb") as img:
                 try:
                     response = await session.request(
                         "POST",
-                        url=SDK_ENPOINTS["upload_data"],
+                        url=URL,
                         data=aiohttp.FormData(fields={"task": task_id, "image": img}),
                     )
                     response.raise_for_status()
@@ -264,11 +276,14 @@ class UnitlabClient:
         Returns:
             Writes the data to a json file.
         """
-        response = self.api_session.get(
-            url=SDK_ENPOINTS["download_data"].format(task_id),
-            headers=self._get_headers(),
+        response = send_request(
+            {
+                "method": "GET",
+                "endpoint": ENDPOINTS["download_data"].format(task_id),
+                "headers": self._get_headers(),
+            },
+            session=self.api_session,
         )
-        response.raise_for_status()
         with self.api_session.get(
             url=response.json()["file"],
             stream=True,
@@ -295,9 +310,15 @@ class UnitlabClient:
         Returns:
             A list of all ai models.
         """
-        r = self.api_session.get(SDK_ENPOINTS["ai_models"], headers=self._get_headers())
-        r.raise_for_status()
-        return r.json()
+        response = send_request(
+            {
+                "method": "GET",
+                "endpoint": ENDPOINTS["ai_models"],
+                "headers": self._get_headers(),
+            },
+            session=self.api_session,
+        )
+        return response.json()
 
     def ai_model(self, ai_model_id):
         """Get an ai model by id.
@@ -307,12 +328,15 @@ class UnitlabClient:
         Returns:
             An ai model.
         """
-        r = self.api_session.get(
-            SDK_ENPOINTS["ai_model"].format(ai_model_id),
-            headers=self._get_headers(),
+        response = send_request(
+            {
+                "method": "GET",
+                "endpoint": ENDPOINTS["ai_model"].format(ai_model_id),
+                "headers": self._get_headers(),
+            },
+            session=self.api_session,
         )
-        r.raise_for_status()
-        return r.json()
+        return response.json()
 
     def datasets(self):
         """Get a list of all datasets.
@@ -320,9 +344,15 @@ class UnitlabClient:
         Returns:
             A list of all datasets.
         """
-        r = self.api_session.get(SDK_ENPOINTS["datasets"], headers=self._get_headers())
-        r.raise_for_status()
-        return r.json()
+        response = send_request(
+            {
+                "method": "GET",
+                "endpoint": ENDPOINTS["datasets"],
+                "headers": self._get_headers(),
+            },
+            session=self.api_session,
+        )
+        return response.json()
 
     def dataset(self, dataset_id):
         """Download a dataset by id.
@@ -332,11 +362,14 @@ class UnitlabClient:
         Returns:
             Writes the data to a json file.
         """
-        response = self.api_session.get(
-            url=SDK_ENPOINTS["dataset"].format(dataset_id),
-            headers=self._get_headers(),
+        response = send_request(
+            {
+                "method": "GET",
+                "endpoint": ENDPOINTS["dataset"].format(dataset_id),
+                "headers": self._get_headers(),
+            },
+            session=self.api_session,
         )
-        response.raise_for_status()
         with self.api_session.get(
             url=response.json()["file"],
             stream=True,
