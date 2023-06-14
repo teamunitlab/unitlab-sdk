@@ -30,8 +30,8 @@ ENDPOINTS = {
 
 def send_request(request, session=None):
     endpoint = request.pop("endpoint")
-    if base_url := os.environ.get("UNITLAB_BASE_URL"):
-        request["url"] = base_url + endpoint
+    if os.environ.get("UNITLAB_BASE_URL"):
+        request["url"] = os.environ.get("UNITLAB_BASE_URL") + endpoint
         response = (
             session.request(**request) if session else requests.request(**request)
         )
