@@ -6,8 +6,6 @@ from .exceptions import AuthenticationError
 
 ENDPOINTS = {
     "check": "/api/check/",
-    "ai_models": "/api/sdk/ai-models/",
-    "ai_model": "/api/sdk/ai-model/{}/",
     "tasks": "/api/sdk/tasks/",
     "task": "/api/sdk/tasks/{}/",
     "task_datasources": "/api/sdk/tasks/{}/datasources/",
@@ -17,8 +15,6 @@ ENDPOINTS = {
     "download_data": "/api/sdk/tasks/{}/download-data/",
     "datasets": "/api/sdk/datasets/",
     "dataset": "/api/sdk/datasets/{}/",
-    "cli_ai_models": "/api/cli/ai-models/",
-    "cli_ai_model": "/api/cli/ai-model/{}/",
     "cli_tasks": "/api/cli/tasks/",
     "cli_task": "/api/cli/tasks/{}/",
     "cli_task_datasources": "/api/cli/tasks/{}/datasources/",

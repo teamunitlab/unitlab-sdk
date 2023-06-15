@@ -60,28 +60,6 @@ def task_statistics(api_key, task_id):
     print(response.json())
 
 
-def ai_models(api_key):
-    response = send_request(
-        {
-            "method": "GET",
-            "headers": get_headers(api_key),
-            "endpoint": ENDPOINTS["cli_ai_models"],
-        }
-    )
-    print(response.json())
-
-
-def ai_model(api_key, pk):
-    response = send_request(
-        {
-            "method": "GET",
-            "headers": get_headers(api_key),
-            "endpoint": ENDPOINTS["cli_ai_model"].format(pk),
-        }
-    )
-    print(response.json())
-
-
 def datasets(api_key):
     response = send_request(
         {

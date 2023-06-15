@@ -304,40 +304,6 @@ class UnitlabClient:
                     f.write(chunk)
         return os.path.abspath(filename)
 
-    def ai_models(self):
-        """Get a list of all ai models.
-
-        Returns:
-            A list of all ai models.
-        """
-        response = send_request(
-            {
-                "method": "GET",
-                "endpoint": ENDPOINTS["ai_models"],
-                "headers": self._get_headers(),
-            },
-            session=self.api_session,
-        )
-        return response.json()
-
-    def ai_model(self, ai_model_id):
-        """Get an ai model by id.
-
-        Args:
-            ai_model_id: The id of the ai model.
-        Returns:
-            An ai model.
-        """
-        response = send_request(
-            {
-                "method": "GET",
-                "endpoint": ENDPOINTS["ai_model"].format(ai_model_id),
-                "headers": self._get_headers(),
-            },
-            session=self.api_session,
-        )
-        return response.json()
-
     def datasets(self):
         """Get a list of all datasets.
 
