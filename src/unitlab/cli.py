@@ -38,12 +38,12 @@ def task_data(api_key, task_id):
     print(response.json())
 
 
-def task_workers(api_key, task_id):
+def task_members(api_key, task_id):
     response = send_request(
         {
             "method": "GET",
             "headers": get_headers(api_key),
-            "endpoint": ENDPOINTS["cli_task_workers"].format(task_id),
+            "endpoint": ENDPOINTS["cli_task_members"].format(task_id),
         }
     )
     print(response.json())

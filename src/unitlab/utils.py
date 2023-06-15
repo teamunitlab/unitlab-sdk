@@ -9,7 +9,7 @@ ENDPOINTS = {
     "tasks": "/api/sdk/tasks/",
     "task": "/api/sdk/tasks/{}/",
     "task_datasources": "/api/sdk/tasks/{}/datasources/",
-    "task_workers": "/api/sdk/tasks/{}/workers/",
+    "task_members": "/api/sdk/tasks/{}/members/",
     "task_statistics": "/api/sdk/tasks/{}/statistics/",
     "upload_data": "/api/sdk/upload-data/",
     "download_data": "/api/sdk/tasks/{}/download-data/",
@@ -18,7 +18,7 @@ ENDPOINTS = {
     "cli_tasks": "/api/cli/tasks/",
     "cli_task": "/api/cli/tasks/{}/",
     "cli_task_datasources": "/api/cli/tasks/{}/datasources/",
-    "cli_task_workers": "/api/cli/tasks/{}/workers/",
+    "cli_task_members": "/api/cli/tasks/{}/members/",
     "cli_task_statistics": "/api/cli/tasks/{}/statistics/",
     "cli_datasets": "/api/cli/datasets/",
 }

@@ -145,18 +145,18 @@ class UnitlabClient:
         )
         return response.json()
 
-    def task_workers(self, task_id):
-        """Get the workers of a task by id.
+    def task_members(self, task_id):
+        """Get members of a task by id.
 
         Args:
             task_id: The id of the task.
         Returns:
-            The workers of a task.
+            Members of a task.
         """
         response = send_request(
             {
                 "method": "GET",
-                "endpoint": ENDPOINTS["task_workers"].format(task_id),
+                "endpoint": ENDPOINTS["task_members"].format(task_id),
                 "headers": self._get_headers(),
             },
             session=self.api_session,

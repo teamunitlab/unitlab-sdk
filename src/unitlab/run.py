@@ -37,7 +37,7 @@ def data(pk: UUID, api_key: API_KEY):
 
 @task_app.command(help="Task members")
 def members(pk: UUID, api_key: API_KEY):
-    cli.task_workers(api_key, pk)
+    cli.task_members(api_key, pk)
 
 
 @task_app.command(help="Task statistics")
