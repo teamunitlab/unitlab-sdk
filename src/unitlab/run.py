@@ -56,6 +56,14 @@ def upload(
     get_client(api_key).upload_data(str(pk), directory=directory)
 
 
+@task_app.command(help="Download data")
+def download(
+    pk: UUID,
+    api_key: API_KEY,
+):
+    get_client(api_key).download_data(str(pk))
+
+
 @app.command()
 def dataset(
     api_key: API_KEY,
