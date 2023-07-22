@@ -199,7 +199,7 @@ class UnitlabClient:
         send_request(
             {
                 "method": "GET",
-                "endpoint": "check",
+                "endpoint": ENDPOINTS["check"],
                 "headers": self._get_headers(),
             },
             session=self.api_session,
