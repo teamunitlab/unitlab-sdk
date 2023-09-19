@@ -1,3 +1,4 @@
+import logging
 import os
 
 import requests
@@ -33,12 +34,14 @@ def send_request(request, session=None):
         )
         if response.ok:
             return response
-
-    request["url"] = "https://api.unitlab.ai" + endpoint
-    response = session.request(**request) if session else requests.request(**request)
-    if response.ok:
-        os.environ["UNITLAB_BASE_URL"] = "https://api.unitlab.ai"
-        return response
+    else:
+        request["url"] = "https://api.unitlab.ai" + endpoint
+        response = (
+            session.request(**request) if session else requests.request(**request)
+        )
+        if response.ok:
+            os.environ["UNITLAB_BASE_URL"] = "https://api.unitlab.ai"
+            return response
 
     if response.status_code == 401:
         request["url"] = "https://api-enterprise.unitlab.ai" + endpoint
@@ -51,6 +54,7 @@ def send_request(request, session=None):
 
     if response.status_code == 401:
         raise AuthenticationError("Invalid API key")
-
+    elif response.status_code == 400:
+        raise Exception(response.json())
     response.raise_for_status()
     return response

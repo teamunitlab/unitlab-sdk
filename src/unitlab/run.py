@@ -1,4 +1,5 @@
 import logging
+from enum import Enum
 from pathlib import Path
 from typing import Optional
 from uuid import UUID
@@ -11,21 +12,28 @@ from .client import UnitlabClient
 
 app = typer.Typer()
 task_app = typer.Typer()
+dataset_app = typer.Typer()
 app.add_typer(task_app, name="task", help="Task commands")
+app.add_typer(dataset_app, name="dataset", help="Dataset commands")
 
 API_KEY = Annotated[str, typer.Option(help="The api-key obtained from unitlab.ai")]
+
+
+class DownloadType(str, Enum):
+    annotation = "annotation"
+    file = "file"
 
 
 def get_client(api_key: str) -> UnitlabClient:
     return UnitlabClient(api_key=api_key)
 
 
-@task_app.command(name="list", help="Task List")
+@task_app.command(name="list", help="Task list")
 def task_list(api_key: API_KEY):
     cli.tasks(api_key)
 
 
-@task_app.command(name="detail", help="Task Detail")
+@task_app.command(name="detail", help="Task detail")
 def task_detail(pk: UUID, api_key: API_KEY):
     cli.task(api_key, pk)
 
@@ -60,22 +68,45 @@ def upload(
 def download(
     pk: UUID,
     api_key: API_KEY,
+    download_type: Annotated[
+        DownloadType,
+        typer.Option(help="Download type (annotation, file)"),
+    ] = DownloadType.annotation,
+    export_type: Annotated[
+        str, typer.Option(help="Export type (coco, yolov8, etc)")
+    ] = None,
 ):
-    get_client(api_key).download_data(str(pk))
+    if download_type == DownloadType.annotation and not export_type:
+        raise typer.BadParameter(
+            "Export type is required when download type is annotation"
+        )
+    get_client(api_key).download_data(pk, download_type.value, export_type)
 
 
-@app.command()
-def dataset(
+@dataset_app.command(name="list", help="List datasets")
+def dataset_list(
     api_key: API_KEY,
-    pk: Annotated[Optional[UUID], typer.Argument()] = None,
 ):
-    """
-    List or retrieve a dataset if pk is provided
-    """
-    if pk:
-        logging.info(f"File: {get_client(api_key).dataset(pk)}")
-    else:
-        cli.datasets(api_key)
+    cli.datasets(api_key)
+
+
+@dataset_app.command(name="download", help="Download dataset")
+def dataset_download(
+    pk: Annotated[Optional[UUID], typer.Argument()],
+    api_key: API_KEY,
+    download_type: Annotated[
+        DownloadType,
+        typer.Option(help="Download type (annotation, file)"),
+    ] = DownloadType.annotation,
+    export_type: Annotated[
+        str, typer.Option(help="Export type (coco, yolov8, etc)")
+    ] = None,
+):
+    if download_type == DownloadType.annotation and not export_type:
+        raise typer.BadParameter(
+            "Export type is required when download type is annotation"
+        )
+    get_client(api_key).dataset_download(pk, download_type.value, export_type)
 
 
 if __name__ == "__main__":

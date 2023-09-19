@@ -3,6 +3,8 @@ import glob
 import logging
 import os
 import re
+import uuid
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import aiohttp
 import requests
@@ -94,11 +96,6 @@ class UnitlabClient:
         return {"Authorization": f"Api-Key {self.api_key}"} if self.api_key else None
 
     def tasks(self):
-        """Get a list of all tasks.
-
-        Returns:
-            A list of all tasks.
-        """
         response = send_request(
             {
                 "method": "GET",
@@ -110,13 +107,6 @@ class UnitlabClient:
         return response.json()
 
     def task(self, task_id):
-        """Get a task by id.
-
-        Args:
-            task_id: The id of the task.
-        Returns:
-            A task.
-        """
         response = send_request(
             {
                 "method": "GET",
@@ -128,13 +118,6 @@ class UnitlabClient:
         return response.json()
 
     def task_data(self, task_id):
-        """Get the data of a task by id.
-
-        Args:
-            task_id: The id of the task.
-        Returns:
-            The data of a task.
-        """
         response = send_request(
             {
                 "method": "GET",
@@ -146,13 +129,6 @@ class UnitlabClient:
         return response.json()
 
     def task_members(self, task_id):
-        """Get members of a task by id.
-
-        Args:
-            task_id: The id of the task.
-        Returns:
-            Members of a task.
-        """
         response = send_request(
             {
                 "method": "GET",
@@ -164,13 +140,6 @@ class UnitlabClient:
         return response.json()
 
     def task_statistics(self, task_id):
-        """Get the statistics of a task by id.
-
-        Args:
-            task_id: The id of the task.
-        Returns:
-            The statistics of a task.
-        """
         response = send_request(
             {
                 "method": "GET",
@@ -182,16 +151,6 @@ class UnitlabClient:
         return response.json()
 
     def upload_data(self, task_id, directory, batch_size=100):
-        """Upload data to a task by id.
-
-        Args:
-            task_id: The id of the task.
-            directory: The directory of images to upload.
-            batch_size: The batch size of images to upload.
-        Returns:
-            The upload status.
-        """
-
         if not os.path.isdir(directory):
             raise ValueError(f"Directory {directory} does not exist")
 
@@ -268,48 +227,53 @@ class UnitlabClient:
 
         asyncio.run(main())
 
-    def download_data(self, task_id):
-        """Download data from a task by id.
-
-        Args:
-            task_id: The id of the task.
-        Returns:
-            Writes the data to a json file.
-        """
+    def download_data(self, task_id, download_type, export_type=None):
         response = send_request(
             {
-                "method": "GET",
+                "method": "POST",
                 "endpoint": ENDPOINTS["download_data"].format(task_id),
                 "headers": self._get_headers(),
+                "json": {"download_type": download_type, "export_type": export_type},
             },
             session=self.api_session,
         )
-        with self.api_session.get(
-            url=response.json()["file"],
-            stream=True,
-        ) as r:
-            r.raise_for_status()
-            if "Content-Disposition" in r.headers.keys():
-                content_disposition = r.headers["Content-Disposition"]
-                filename_match = re.search('filename="(.+)"', content_disposition)
-                if filename_match:
-                    filename = filename_match.group(1)
+        if download_type == "annotation":
+            with self.api_session.get(
+                url=response.json()["file"],
+                stream=True,
+            ) as r:
+                r.raise_for_status()
+                if "Content-Disposition" in r.headers.keys():
+                    content_disposition = r.headers["Content-Disposition"]
+                    filename_match = re.search('filename="(.+)"', content_disposition)
+                    if filename_match:
+                        filename = filename_match.group(1)
+                    else:
+                        filename = f"task-data-{task_id}.json"
                 else:
                     filename = f"task-data-{task_id}.json"
-            else:
-                filename = f"task-data-{task_id}.json"
 
-            with open(filename, "wb") as f:
-                for chunk in r.iter_content(chunk_size=1024 * 1024):
-                    f.write(chunk)
-        return os.path.abspath(filename)
+                with open(filename, "wb") as f:
+                    for chunk in r.iter_content(chunk_size=1024 * 1024):
+                        f.write(chunk)
+            logging.info(f"File: {os.path.abspath(filename)}")
+            return os.path.abspath(filename)
+        files = []
+        with ThreadPoolExecutor() as executor:
+            futures = [
+                executor.submit(
+                    self.download_file,
+                    f"{task_id}-{uuid.uuid4().hex[:8]}.zip",
+                    file["file"],
+                )
+                for file in response.json()
+            ]
+            for future in as_completed(futures):
+                files.append(future.result())
+        logging.info(f"Files: {', '.join([os.path.abspath(file) for file in files])}")
+        return files
 
     def datasets(self):
-        """Get a list of all datasets.
-
-        Returns:
-            A list of all datasets.
-        """
         response = send_request(
             {
                 "method": "GET",
@@ -320,38 +284,45 @@ class UnitlabClient:
         )
         return response.json()
 
-    def dataset(self, dataset_id):
-        """Download a dataset by id.
-
-        Args:
-            dataset_id: The id of the dataset.
-        Returns:
-            Writes the data to a json file.
-        """
+    def dataset_download(self, dataset_id, download_type, export_type=None):
         response = send_request(
             {
-                "method": "GET",
+                "method": "POST",
                 "endpoint": ENDPOINTS["dataset"].format(dataset_id),
                 "headers": self._get_headers(),
+                "json": {"download_type": download_type, "export_type": export_type},
             },
             session=self.api_session,
         )
-        with self.api_session.get(
-            url=response.json()["file"],
-            stream=True,
-        ) as r:
-            r.raise_for_status()
-            if "Content-Disposition" in r.headers.keys():
-                content_disposition = r.headers["Content-Disposition"]
-                filename_match = re.search('filename="(.+)"', content_disposition)
-                if filename_match:
-                    filename = filename_match.group(1)
-                else:
-                    filename = f"dataset-{dataset_id}.json"
-            else:
+        if download_type == "annotation":
+            with self.api_session.get(url=response.json()["file"], stream=True) as r:
+                r.raise_for_status()
                 filename = f"dataset-{dataset_id}.json"
 
+                with open(filename, "wb") as f:
+                    for chunk in r.iter_content(chunk_size=1024 * 1024):
+                        f.write(chunk)
+                logging.info(f"File: {os.path.abspath(filename)}")
+                return os.path.abspath(filename)
+        files = []
+        with ThreadPoolExecutor() as executor:
+            futures = [
+                executor.submit(
+                    self.download_file,
+                    f"{dataset_id}-{uuid.uuid4().hex[:8]}.zip",
+                    file["file"],
+                )
+                for file in response.json()
+            ]
+            for future in as_completed(futures):
+                files.append(future.result())
+        logging.info(f"Files: {', '.join([os.path.abspath(file) for file in files])}")
+        return files
+
+    def download_file(self, filename, url):
+        with self.api_session.get(url=url, stream=True) as r:
+            r.raise_for_status()
             with open(filename, "wb") as f:
                 for chunk in r.iter_content(chunk_size=1024 * 1024):
                     f.write(chunk)
-        return os.path.abspath(filename)
+            return os.path.abspath(filename)
