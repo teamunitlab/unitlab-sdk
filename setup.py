@@ -2,7 +2,7 @@ from setuptools import find_packages, setup
 
 setup(
     name="unitlab",
-    version="1.9.3",
+    version="1.9.4",
     license="MIT",
     author="Unitlab Inc.",
     author_email="team@unitlab.ai",
