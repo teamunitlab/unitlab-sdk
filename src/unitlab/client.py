@@ -69,7 +69,7 @@ class UnitlabClient:
         .. code-block:: python
 
             client = UnitlabClient()
-            client.tasks()
+            client.projects()
             client.close()
 
         Or use the client as a context manager:
@@ -77,7 +77,7 @@ class UnitlabClient:
         .. code-block:: python
 
             with UnitlabClient() as client:
-                client.tasks()
+                client.projects()
         """
         self.api_session.close()
 
@@ -95,62 +95,62 @@ class UnitlabClient:
     def _get_headers(self):
         return {"Authorization": f"Api-Key {self.api_key}"} if self.api_key else None
 
-    def tasks(self):
+    def projects(self):
         response = send_request(
             {
                 "method": "GET",
-                "endpoint": ENDPOINTS["tasks"],
+                "endpoint": ENDPOINTS["projects"],
                 "headers": self._get_headers(),
             },
             session=self.api_session,
         )
         return response.json()
 
-    def task(self, task_id):
+    def project(self, project_id):
         response = send_request(
             {
                 "method": "GET",
-                "endpoint": ENDPOINTS["task"].format(task_id),
+                "endpoint": ENDPOINTS["project"].format(project_id),
                 "headers": self._get_headers(),
             },
             session=self.api_session,
         )
         return response.json()
 
-    def task_data(self, task_id):
+    def project_data(self, project_id):
         response = send_request(
             {
                 "method": "GET",
-                "endpoint": ENDPOINTS["task_datasources"].format(task_id),
+                "endpoint": ENDPOINTS["project_datasources"].format(project_id),
                 "headers": self._get_headers(),
             },
             session=self.api_session,
         )
         return response.json()
 
-    def task_members(self, task_id):
+    def project_members(self, project_id):
         response = send_request(
             {
                 "method": "GET",
-                "endpoint": ENDPOINTS["task_members"].format(task_id),
+                "endpoint": ENDPOINTS["project_members"].format(project_id),
                 "headers": self._get_headers(),
             },
             session=self.api_session,
         )
         return response.json()
 
-    def task_statistics(self, task_id):
+    def project_statistics(self, project_id):
         response = send_request(
             {
                 "method": "GET",
-                "endpoint": ENDPOINTS["task_statistics"].format(task_id),
+                "endpoint": ENDPOINTS["project_statistics"].format(project_id),
                 "headers": self._get_headers(),
             },
             session=self.api_session,
         )
         return response.json()
 
-    def upload_data(self, task_id, directory, batch_size=100):
+    def upload_data(self, project_id, directory, batch_size=100):
         if not os.path.isdir(directory):
             raise ValueError(f"Directory {directory} does not exist")
 
@@ -165,73 +165,80 @@ class UnitlabClient:
         )
         URL = os.environ["UNITLAB_BASE_URL"] + ENDPOINTS["upload_data"]
 
-        async def post_image(session: aiohttp.ClientSession, image: str, task_id: str):
-            with open(image, "rb") as img:
+        async def post_file(session: aiohttp.ClientSession, file: str, project_id: str):
+            with open(file, "rb") as f:
                 try:
                     response = await session.request(
                         "POST",
                         url=URL,
-                        data=aiohttp.FormData(fields={"task": task_id, "image": img}),
+                        data=aiohttp.FormData(
+                            fields={"project": project_id, "file": f}
+                        ),
                     )
                     response.raise_for_status()
                     return 1 if response.status == 201 else 0
                 except Exception as e:
-                    logging.error(f"Error uploading image {image} - {e}")
+                    logging.error(f"Error uploading file {file} - {e}")
                     return 0
 
         async def batch_upload(
-            session: aiohttp.ClientSession, batch: list, task_id: str, pbar: tqdm.tqdm
+            session: aiohttp.ClientSession,
+            batch: list,
+            project_id: str,
+            pbar: tqdm.tqdm,
         ):
             tasks = []
-            for image in batch:
-                tasks.append(post_image(session=session, image=image, task_id=task_id))
+            for file in batch:
+                tasks.append(
+                    post_file(session=session, file=file, project_id=project_id)
+                )
             for f in asyncio.as_completed(tasks):
                 pbar.update(await f)
 
         async def main():
-            images = [
-                image
-                for images_list in (
+            files = [
+                file
+                for files_list in (
                     glob.glob(os.path.join(directory, "") + extension)
                     for extension in ["*jpg", "*png", "*jpeg", "*webp"]
                 )
-                for image in images_list
+                for file in files_list
             ]
-            filtered_images = []
-            for image in images:
-                file_size = os.path.getsize(image) / 1024 / 1024
+            filtered_files = []
+            for file in files:
+                file_size = os.path.getsize(file) / 1024 / 1024
                 if file_size > 6:
                     logging.warning(
-                        f"Image {image} is too large ({file_size:.4f} megabytes) skipping, max size is 6 MB"
+                        f"File {file} is too large ({file_size:.4f} megabytes) skipping, max size is 6 MB"
                     )
                     continue
-                filtered_images.append(image)
+                filtered_files.append(file)
 
-            num_images = len(filtered_images)
-            num_batches = (num_images + batch_size - 1) // batch_size
+            num_files = len(filtered_files)
+            num_batches = (num_files + batch_size - 1) // batch_size
 
-            logging.info(f"Uploading {num_images} images to task {task_id}")
-            with tqdm.tqdm(total=num_images, ncols=80) as pbar:
+            logging.info(f"Uploading {num_files} files to project {project_id}")
+            with tqdm.tqdm(total=num_files, ncols=80) as pbar:
                 async with aiohttp.ClientSession(
                     headers=self._get_headers()
                 ) as session:
                     for i in range(num_batches):
                         await batch_upload(
                             session,
-                            filtered_images[
-                                i * batch_size : min((i + 1) * batch_size, num_images)
+                            filtered_files[
+                                i * batch_size : min((i + 1) * batch_size, num_files)
                             ],
-                            task_id,
+                            project_id,
                             pbar,
                         )
 
         asyncio.run(main())
 
-    def download_data(self, task_id, download_type, export_type=None):
+    def download_data(self, project_id, download_type, export_type=None):
         response = send_request(
             {
                 "method": "POST",
-                "endpoint": ENDPOINTS["download_data"].format(task_id),
+                "endpoint": ENDPOINTS["download_data"].format(project_id),
                 "headers": self._get_headers(),
                 "json": {"download_type": download_type, "export_type": export_type},
             },
@@ -249,9 +256,9 @@ class UnitlabClient:
                     if filename_match:
                         filename = filename_match.group(1)
                     else:
-                        filename = f"task-data-{task_id}.json"
+                        filename = f"project-data-{project_id}.json"
                 else:
-                    filename = f"task-data-{task_id}.json"
+                    filename = f"project-data-{project_id}.json"
 
                 with open(filename, "wb") as f:
                     for chunk in r.iter_content(chunk_size=1024 * 1024):
@@ -263,7 +270,7 @@ class UnitlabClient:
             futures = [
                 executor.submit(
                     self.download_file,
-                    f"{task_id}-{uuid.uuid4().hex[:8]}.zip",
+                    f"{project_id}-{uuid.uuid4().hex[:8]}.zip",
                     file["file"],
                 )
                 for file in response.json()

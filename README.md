@@ -19,7 +19,7 @@ To get started with the Unitlab.ai CLI/Python SDK, you'll need to install it usi
 
 `pip install --upgrade unitlab`
 
-Once you have successfully installed the Unitlab package, you can conveniently handle all tasks using the terminal.
+Once you have successfully installed the Unitlab package, you can conveniently handle all projects using the terminal.
 
 [This tutorial](https://docs.unitlab.ai/cli-python-sdk/cli) walks you through the most common CLI commands.
 

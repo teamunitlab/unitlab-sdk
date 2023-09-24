@@ -32,7 +32,7 @@ Authorization: Api-Key YOUR_COMPANY_API_KEY
           "boxes": [
             {}
           ],
-          "image": [
+          "meta": [
           ],
         ],
         "status": "labeled",
@@ -61,7 +61,7 @@ Authorization: Api-Key YOUR_COMPANY_API_KEY
           "boxes": [
             {}
           ],
-          "image": [
+          "meta": [
           ],
         ],
         "status": "labeled",
@@ -91,7 +91,7 @@ Authorization: Api-Key YOUR_COMPANY_API_KEY
           "boxes": [
             {}
           ],
-          "image": [
+          "meta": [
           ],
         ],
         "status": "labeled",
@@ -123,7 +123,7 @@ Authorization: Api-Key YOUR_COMPANY_API_KEY
           "boxes": [
             {}
           ],
-          "image": [
+          "meta": [
           ],
         ],
         "status": "labeled",
@@ -153,7 +153,7 @@ Authorization: Api-Key YOUR_COMPANY_API_KEY
           "boxes": [
             {}
           ],
-          "image": [
+          "meta": [
           ],
         ],
         "status": "labeled",
@@ -183,7 +183,7 @@ Authorization: Api-Key YOUR_COMPANY_API_KEY
           "boxes": [
             {}
           ],
-          "image": [
+          "meta": [
           ],
         ],
         "status": "labeled",
@@ -213,7 +213,7 @@ Authorization: Api-Key YOUR_COMPANY_API_KEY
           "boxes": [
             {}
           ],
-          "image": [
+          "meta": [
           ],
         ],
         "status": "labeled",
@@ -243,7 +243,7 @@ Authorization: Api-Key YOUR_COMPANY_API_KEY
           "boxes": [
             {}
           ],
-          "image": [
+          "meta": [
           ],
         ],
         "status": "labeled",
@@ -273,7 +273,7 @@ Authorization: Api-Key YOUR_COMPANY_API_KEY
           "boxes": [
             {}
           ],
-          "image": [
+          "meta": [
           ],
         ],
         "status": "labeled",
@@ -282,7 +282,7 @@ Authorization: Api-Key YOUR_COMPANY_API_KEY
 
 
   1.10. Car Detection:
-    PURPOSE: The aim of car detection in AI is to automatically detect and locate cars within an image or video stream. Car detection is a fundamental task in computer vision and has numerous applications, such as traffic monitoring, parking lot management, and autonomous driving.
+    PURPOSE: The aim of car detection in AI is to automatically detect and locate cars within an image or video stream. Car detection is a fundamental project in computer vision and has numerous applications, such as traffic monitoring, parking lot management, and autonomous driving.
 
     REQUEST POST BASE_URL + 'car/':
       {
@@ -303,7 +303,7 @@ Authorization: Api-Key YOUR_COMPANY_API_KEY
           "boxes": [
             {}
           ],
-          "image": [
+          "meta": [
           ],
         ],
         "status": "labeled",
@@ -312,7 +312,7 @@ Authorization: Api-Key YOUR_COMPANY_API_KEY
 
 
   1.11. General Detection:
-    PURPOSE: The aim of general detection in AI is to automatically detect and locate objects within an image or video stream, regardless of their class or category. General detection is a fundamental task in computer vision and has numerous applications, such as object recognition, scene understanding, and robotics.
+    PURPOSE: The aim of general detection in AI is to automatically detect and locate objects within an image or video stream, regardless of their class or category. General detection is a fundamental project in computer vision and has numerous applications, such as object recognition, scene understanding, and robotics.
 
     REQUEST POST BASE_URL + 'general-detection/':
       {
@@ -333,7 +333,7 @@ Authorization: Api-Key YOUR_COMPANY_API_KEY
           "boxes": [
             {}
           ],
-          "image": [
+          "meta": [
           ],
         ],
         "status": "labeled",
@@ -363,7 +363,7 @@ Authorization: Api-Key YOUR_COMPANY_API_KEY
           "boxes": [
             {}
           ],
-          "image": [
+          "meta": [
           ],
         ],
         "status": "labeled",
@@ -393,7 +393,7 @@ Authorization: Api-Key YOUR_COMPANY_API_KEY
           "boxes": [
             {}
           ],
-          "image": [
+          "meta": [
           ],
         ],
         "status": "labeled",
@@ -423,7 +423,7 @@ Authorization: Api-Key YOUR_COMPANY_API_KEY
           "boxes": [
             {}
           ],
-          "image": [
+          "meta": [
           ],
         ],
         "status": "labeled",
@@ -453,7 +453,7 @@ Authorization: Api-Key YOUR_COMPANY_API_KEY
           "boxes": [
             {}
           ],
-          "image": [
+          "meta": [
           ],
         ],
         "status": "labeled",
@@ -483,7 +483,7 @@ Authorization: Api-Key YOUR_COMPANY_API_KEY
           "boxes": [
             {}
           ],
-          "image": [
+          "meta": [
           ],
         ],
         "status": "labeled",
@@ -513,7 +513,7 @@ Authorization: Api-Key YOUR_COMPANY_API_KEY
           "boxes": [
             {}
           ],
-          "image": [
+          "meta": [
           ],
         ],
         "status": "labeled",
@@ -544,7 +544,7 @@ Authorization: Api-Key YOUR_COMPANY_API_KEY
           "boxes": [
             {}
           ],
-          "image": [
+          "meta": [
           ],
         ],
         "status": "labeled",
@@ -575,7 +575,7 @@ Authorization: Api-Key YOUR_COMPANY_API_KEY
           "boxes": [
             {}
           ],
-          "image": [
+          "meta": [
           ],
         ],
         "status": "labeled",
@@ -606,7 +606,7 @@ Authorization: Api-Key YOUR_COMPANY_API_KEY
           "boxes": [
             {}
           ],
-          "image": [
+          "meta": [
           ],
         ],
         "status": "labeled",
@@ -637,7 +637,7 @@ Authorization: Api-Key YOUR_COMPANY_API_KEY
           "boxes": [
             {}
           ],
-          "image": [
+          "meta": [
           ],
         ],
         "status": "labeled",

@@ -11,9 +11,9 @@ from . import cli
 from .client import UnitlabClient
 
 app = typer.Typer()
-task_app = typer.Typer()
+project_app = typer.Typer()
 dataset_app = typer.Typer()
-app.add_typer(task_app, name="task", help="Task commands")
+app.add_typer(project_app, name="project", help="Project commands")
 app.add_typer(dataset_app, name="dataset", help="Dataset commands")
 
 API_KEY = Annotated[str, typer.Option(help="The api-key obtained from unitlab.ai")]
@@ -28,32 +28,32 @@ def get_client(api_key: str) -> UnitlabClient:
     return UnitlabClient(api_key=api_key)
 
 
-@task_app.command(name="list", help="Task list")
-def task_list(api_key: API_KEY):
-    cli.tasks(api_key)
+@project_app.command(name="list", help="Project list")
+def project_list(api_key: API_KEY):
+    cli.projects(api_key)
 
 
-@task_app.command(name="detail", help="Task detail")
-def task_detail(pk: UUID, api_key: API_KEY):
-    cli.task(api_key, pk)
+@project_app.command(name="detail", help="Project detail")
+def project_detail(pk: UUID, api_key: API_KEY):
+    cli.project(api_key, pk)
 
 
-@task_app.command(help="Task datasources")
+@project_app.command(help="Project datasources")
 def data(pk: UUID, api_key: API_KEY):
-    cli.task_data(api_key, pk)
+    cli.project_data(api_key, pk)
 
 
-@task_app.command(help="Task members")
+@project_app.command(help="Project members")
 def members(pk: UUID, api_key: API_KEY):
-    cli.task_members(api_key, pk)
+    cli.project_members(api_key, pk)
 
 
-@task_app.command(help="Task statistics")
+@project_app.command(help="Project statistics")
 def statistics(pk: UUID, api_key: API_KEY):
-    cli.task_statistics(api_key, pk)
+    cli.project_statistics(api_key, pk)
 
 
-@task_app.command(help="Upload data")
+@project_app.command(help="Upload data")
 def upload(
     pk: UUID,
     api_key: API_KEY,
@@ -64,7 +64,7 @@ def upload(
     get_client(api_key).upload_data(str(pk), directory=directory)
 
 
-@task_app.command(help="Download data")
+@project_app.command(help="Download data")
 def download(
     pk: UUID,
     api_key: API_KEY,
