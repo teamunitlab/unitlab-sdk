@@ -235,6 +235,10 @@ class UnitlabClient:
         asyncio.run(main())
 
     def download_data(self, project_id, download_type, export_type=None):
+        if download_type == "annotation" and export_type is None:
+            raise ValueError(
+                "Please specify an export_type when download_type is annotation"
+            )
         response = send_request(
             {
                 "method": "POST",
@@ -292,6 +296,10 @@ class UnitlabClient:
         return response.json()
 
     def dataset_download(self, dataset_id, download_type, export_type=None):
+        if download_type == "annotation" and export_type is None:
+            raise ValueError(
+                "Please specify an export_type when download_type is annotation"
+            )
         response = send_request(
             {
                 "method": "POST",
