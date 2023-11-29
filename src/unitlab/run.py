@@ -38,19 +38,9 @@ def project_detail(pk: UUID, api_key: API_KEY):
     cli.project(api_key, pk)
 
 
-@project_app.command(help="Project datasources")
-def data(pk: UUID, api_key: API_KEY):
-    cli.project_data(api_key, pk)
-
-
 @project_app.command(help="Project members")
 def members(pk: UUID, api_key: API_KEY):
     cli.project_members(api_key, pk)
-
-
-@project_app.command(help="Project statistics")
-def statistics(pk: UUID, api_key: API_KEY):
-    cli.project_statistics(api_key, pk)
 
 
 @project_app.command(help="Upload data")

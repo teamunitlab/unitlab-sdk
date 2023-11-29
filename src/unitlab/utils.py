@@ -9,18 +9,14 @@ ENDPOINTS = {
     "check": "/api/check/",
     "projects": "/api/sdk/projects/",
     "project": "/api/sdk/projects/{}/",
-    "project_datasources": "/api/sdk/projects/{}/datasources/",
     "project_members": "/api/sdk/projects/{}/members/",
-    "project_statistics": "/api/sdk/projects/{}/statistics/",
     "upload_data": "/api/sdk/upload-data/",
     "download_data": "/api/sdk/projects/{}/download-data/",
     "datasets": "/api/sdk/datasets/",
     "dataset": "/api/sdk/datasets/{}/",
     "cli_projects": "/api/cli/projects/",
     "cli_project": "/api/cli/projects/{}/",
-    "cli_project_datasources": "/api/cli/projects/{}/datasources/",
     "cli_project_members": "/api/cli/projects/{}/members/",
-    "cli_project_statistics": "/api/cli/projects/{}/statistics/",
     "cli_datasets": "/api/cli/datasets/",
 }
 
@@ -34,6 +30,12 @@ def send_request(request, session=None):
         )
         if response.ok:
             return response
+        if response.status_code == 401:
+            raise AuthenticationError("Invalid API key")
+        elif response.status_code == 400:
+            raise Exception(response.json())
+        response.raise_for_status()
+        return response
     else:
         request["url"] = "https://api.unitlab.ai" + endpoint
         response = (
@@ -43,18 +45,9 @@ def send_request(request, session=None):
             os.environ["UNITLAB_BASE_URL"] = "https://api.unitlab.ai"
             return response
 
-    if response.status_code == 401:
-        request["url"] = "https://api-enterprise.unitlab.ai" + endpoint
-        response = (
-            session.request(**request) if session else requests.request(**request)
-        )
-        if response.ok:
-            os.environ["UNITLAB_BASE_URL"] = "https://api-enterprise.unitlab.ai"
-            return response
-
-    if response.status_code == 401:
-        raise AuthenticationError("Invalid API key")
-    elif response.status_code == 400:
-        raise Exception(response.json())
-    response.raise_for_status()
-    return response
+        if response.status_code == 401:
+            raise AuthenticationError("Invalid API key")
+        elif response.status_code == 400:
+            raise Exception(response.json())
+        response.raise_for_status()
+        return response

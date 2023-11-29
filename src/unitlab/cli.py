@@ -27,34 +27,12 @@ def project(api_key, project_id):
     print(response.json())
 
 
-def project_data(api_key, project_id):
-    response = send_request(
-        {
-            "method": "GET",
-            "headers": get_headers(api_key),
-            "endpoint": ENDPOINTS["cli_project_datasources"].format(project_id),
-        }
-    )
-    print(response.json())
-
-
 def project_members(api_key, project_id):
     response = send_request(
         {
             "method": "GET",
             "headers": get_headers(api_key),
             "endpoint": ENDPOINTS["cli_project_members"].format(project_id),
-        }
-    )
-    print(response.json())
-
-
-def project_statistics(api_key, project_id):
-    response = send_request(
-        {
-            "method": "GET",
-            "headers": get_headers(api_key),
-            "endpoint": ENDPOINTS["cli_project_statistics"].format(project_id),
         }
     )
     print(response.json())

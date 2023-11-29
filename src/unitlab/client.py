@@ -117,17 +117,6 @@ class UnitlabClient:
         )
         return response.json()
 
-    def project_data(self, project_id):
-        response = send_request(
-            {
-                "method": "GET",
-                "endpoint": ENDPOINTS["project_datasources"].format(project_id),
-                "headers": self._get_headers(),
-            },
-            session=self.api_session,
-        )
-        return response.json()
-
     def project_members(self, project_id):
         response = send_request(
             {
@@ -165,18 +154,25 @@ class UnitlabClient:
         )
         URL = os.environ["UNITLAB_BASE_URL"] + ENDPOINTS["upload_data"]
 
-        async def post_file(session: aiohttp.ClientSession, file: str, project_id: str):
-            with open(file, "rb") as f:
+        async def post_file(
+            session: aiohttp.ClientSession, file: str, project_id: str, retries=3
+        ):
+            for _ in range(retries):
                 try:
-                    response = await session.request(
-                        "POST",
-                        url=URL,
-                        data=aiohttp.FormData(
-                            fields={"project": project_id, "file": f}
-                        ),
-                    )
-                    response.raise_for_status()
-                    return 1 if response.status == 201 else 0
+                    with open(file, "rb") as f:
+                        response = await session.request(
+                            "POST",
+                            url=URL,
+                            data=aiohttp.FormData(
+                                fields={"project": project_id, "file": f}
+                            ),
+                        )
+                        response.raise_for_status()
+                        return 1 if response.status == 201 else 0
+                except aiohttp.client_exceptions.ServerDisconnectedError as e:
+                    logging.warning(f"Error: {e}: Retrying...")
+                    await asyncio.sleep(0.1)
+                    continue
                 except Exception as e:
                     logging.error(f"Error uploading file {file} - {e}")
                     return 0
