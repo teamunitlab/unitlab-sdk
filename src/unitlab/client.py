@@ -2,9 +2,6 @@ import asyncio
 import glob
 import logging
 import os
-import re
-import uuid
-from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import aiohttp
 import requests
@@ -128,17 +125,6 @@ class UnitlabClient:
         )
         return response.json()
 
-    def project_statistics(self, project_id):
-        response = send_request(
-            {
-                "method": "GET",
-                "endpoint": ENDPOINTS["project_statistics"].format(project_id),
-                "headers": self._get_headers(),
-            },
-            session=self.api_session,
-        )
-        return response.json()
-
     def upload_data(self, project_id, directory, batch_size=100):
         if not os.path.isdir(directory):
             raise ValueError(f"Directory {directory} does not exist")
@@ -229,111 +215,3 @@ class UnitlabClient:
                         )
 
         asyncio.run(main())
-
-    def download_data(self, project_id, download_type, export_type=None):
-        if download_type == "annotation" and export_type is None:
-            raise ValueError(
-                "Please specify an export_type when download_type is annotation"
-            )
-        response = send_request(
-            {
-                "method": "POST",
-                "endpoint": ENDPOINTS["download_data"].format(project_id),
-                "headers": self._get_headers(),
-                "json": {"download_type": download_type, "export_type": export_type},
-            },
-            session=self.api_session,
-        )
-        if download_type == "annotation":
-            with self.api_session.get(
-                url=response.json()["file"],
-                stream=True,
-            ) as r:
-                r.raise_for_status()
-                if "Content-Disposition" in r.headers.keys():
-                    content_disposition = r.headers["Content-Disposition"]
-                    filename_match = re.search('filename="(.+)"', content_disposition)
-                    if filename_match:
-                        filename = filename_match.group(1)
-                    else:
-                        filename = f"project-data-{project_id}.json"
-                else:
-                    filename = f"project-data-{project_id}.json"
-
-                with open(filename, "wb") as f:
-                    for chunk in r.iter_content(chunk_size=1024 * 1024):
-                        f.write(chunk)
-            logging.info(f"File: {os.path.abspath(filename)}")
-            return os.path.abspath(filename)
-        files = []
-        with ThreadPoolExecutor() as executor:
-            futures = [
-                executor.submit(
-                    self.download_file,
-                    f"{project_id}-{uuid.uuid4().hex[:8]}.zip",
-                    file["file"],
-                )
-                for file in response.json()
-            ]
-            for future in as_completed(futures):
-                files.append(future.result())
-        logging.info(f"Files: {', '.join([os.path.abspath(file) for file in files])}")
-        return files
-
-    def datasets(self):
-        response = send_request(
-            {
-                "method": "GET",
-                "endpoint": ENDPOINTS["datasets"],
-                "headers": self._get_headers(),
-            },
-            session=self.api_session,
-        )
-        return response.json()
-
-    def dataset_download(self, dataset_id, download_type, export_type=None):
-        if download_type == "annotation" and export_type is None:
-            raise ValueError(
-                "Please specify an export_type when download_type is annotation"
-            )
-        response = send_request(
-            {
-                "method": "POST",
-                "endpoint": ENDPOINTS["dataset"].format(dataset_id),
-                "headers": self._get_headers(),
-                "json": {"download_type": download_type, "export_type": export_type},
-            },
-            session=self.api_session,
-        )
-        if download_type == "annotation":
-            with self.api_session.get(url=response.json()["file"], stream=True) as r:
-                r.raise_for_status()
-                filename = f"dataset-{dataset_id}.json"
-
-                with open(filename, "wb") as f:
-                    for chunk in r.iter_content(chunk_size=1024 * 1024):
-                        f.write(chunk)
-                logging.info(f"File: {os.path.abspath(filename)}")
-                return os.path.abspath(filename)
-        files = []
-        with ThreadPoolExecutor() as executor:
-            futures = [
-                executor.submit(
-                    self.download_file,
-                    f"{dataset_id}-{uuid.uuid4().hex[:8]}.zip",
-                    file["file"],
-                )
-                for file in response.json()
-            ]
-            for future in as_completed(futures):
-                files.append(future.result())
-        logging.info(f"Files: {', '.join([os.path.abspath(file) for file in files])}")
-        return files
-
-    def download_file(self, filename, url):
-        with self.api_session.get(url=url, stream=True) as r:
-            r.raise_for_status()
-            with open(filename, "wb") as f:
-                for chunk in r.iter_content(chunk_size=1024 * 1024):
-                    f.write(chunk)
-            return os.path.abspath(filename)

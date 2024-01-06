@@ -36,14 +36,3 @@ def project_members(api_key, project_id):
         }
     )
     print(response.json())
-
-
-def datasets(api_key):
-    response = send_request(
-        {
-            "method": "GET",
-            "headers": get_headers(api_key),
-            "endpoint": ENDPOINTS["cli_datasets"],
-        }
-    )
-    print(response.json())

@@ -2,7 +2,7 @@ from setuptools import find_packages, setup
 
 setup(
     name="unitlab",
-    version="1.9.7",
+    version="1.9.8",
     license="MIT",
     author="Unitlab Inc.",
     author_email="team@unitlab.ai",
@@ -19,15 +19,13 @@ setup(
         "Programming Language :: Python :: 3.9",
         "Programming Language :: Python :: 3.10",
         "Programming Language :: Python :: 3.11",
+        "Programming Language :: Python :: 3.12",
     ],
     package_dir={"": "src"},
     url="https://github.com/teamunitlab/unitlab-sdk",
     keywords="unitlab-sdk",
     install_requires=[
         "aiohttp",
-        "numpy",
-        "opencv-python",
-        "Pillow",
         "requests",
         "tqdm",
         "typer",
