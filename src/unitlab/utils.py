@@ -10,9 +10,12 @@ ENDPOINTS = {
     "project": "/api/sdk/projects/{}/",
     "project_members": "/api/sdk/projects/{}/members/",
     "upload_data": "/api/sdk/upload-data/",
+    "datasets": "/api/sdk/datasets/",
+    "dataset": "/api/sdk/datasets/{}/",
     "cli_projects": "/api/cli/projects/",
     "cli_project": "/api/cli/projects/{}/",
     "cli_project_members": "/api/cli/projects/{}/members/",
+    "cli_datasets": "/api/cli/datasets/",
 }
 
 
