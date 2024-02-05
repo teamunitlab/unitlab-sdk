@@ -82,3 +82,10 @@ def dataset_download(
             "Export type is required when download type is annotation"
         )
     get_client(api_key).dataset_download(pk, download_type.value, export_type)
+
+
+@dataset_app.command(name="download-images", help="Download dataset files")
+def download_dataset_files(
+    pk: Annotated[Optional[UUID], typer.Argument()], api_key: API_KEY
+):
+    get_client(api_key).download_dataset_images(pk)

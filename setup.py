@@ -2,7 +2,7 @@ from setuptools import find_packages, setup
 
 setup(
     name="unitlab",
-    version="1.9.9",
+    version="2.0.0",
     license="MIT",
     author="Unitlab Inc.",
     author_email="team@unitlab.ai",
@@ -26,6 +26,7 @@ setup(
     keywords="unitlab-sdk",
     install_requires=[
         "aiohttp",
+        "aiofiles",
         "requests",
         "tqdm",
         "typer",

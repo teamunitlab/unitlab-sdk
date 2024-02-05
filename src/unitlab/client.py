@@ -5,6 +5,7 @@ import os
 import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
+import aiofiles
 import aiohttp
 import requests
 import tqdm
@@ -277,3 +278,48 @@ class UnitlabClient:
                 for chunk in r.iter_content(chunk_size=1024 * 1024):
                     f.write(chunk)
             return os.path.abspath(filename)
+
+    def download_dataset_images(self, dataset_id):
+        response = send_request(
+            {
+                "method": "POST",
+                "endpoint": ENDPOINTS["dataset_files"].format(dataset_id),
+                "headers": self._get_headers(),
+            },
+            session=self.api_session,
+        )
+        folder = f"dataset-images-{dataset_id}"
+        os.makedirs(folder, exist_ok=True)
+        dataset_files = [
+            dataset_file
+            for dataset_file in response.json()
+            if not os.path.isfile(os.path.join(folder, dataset_file["file_name"]))
+        ]
+
+        async def download_file(session: aiohttp.ClientSession, dataset_file: dict):
+            async with session.get(url=dataset_file["source"]) as r:
+                try:
+                    r.raise_for_status()
+                except Exception as e:
+                    logging.error(
+                        f"Error downloading file {dataset_file['file_name']} - {e}"
+                    )
+                    return 0
+                async with aiofiles.open(
+                    os.path.join(folder, dataset_file["file_name"]), "wb"
+                ) as f:
+                    async for chunk in r.content.iter_any():
+                        await f.write(chunk)
+                    return 1
+
+        async def main():
+            async with aiohttp.ClientSession() as session:
+                tasks = [
+                    download_file(session=session, dataset_file=dataset_file)
+                    for dataset_file in dataset_files
+                ]
+                with tqdm.tqdm(total=len(dataset_files), ncols=80) as pbar:
+                    for f in asyncio.as_completed(tasks):
+                        pbar.update(await f)
+
+        asyncio.run(main())
