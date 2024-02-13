@@ -6,8 +6,8 @@ from uuid import UUID
 import typer
 from typing_extensions import Annotated
 
-from . import cli
 from .client import UnitlabClient
+from .utils import ENDPOINTS, send_request
 
 app = typer.Typer()
 project_app = typer.Typer()
@@ -28,19 +28,44 @@ def get_client(api_key: str) -> UnitlabClient:
     return UnitlabClient(api_key=api_key)
 
 
+def get_headers(api_key):
+    return {"Authorization": f"Api-Key {api_key}"}
+
+
 @project_app.command(name="list", help="Project list")
 def project_list(api_key: API_KEY):
-    cli.projects(api_key)
+    response = send_request(
+        {
+            "method": "GET",
+            "headers": get_headers(api_key),
+            "endpoint": ENDPOINTS["cli_projects"],
+        }
+    )
+    print(response.json())
 
 
 @project_app.command(name="detail", help="Project detail")
 def project_detail(pk: UUID, api_key: API_KEY):
-    cli.project(api_key, pk)
+    response = send_request(
+        {
+            "method": "GET",
+            "headers": get_headers(api_key),
+            "endpoint": ENDPOINTS["cli_project"].format(pk),
+        }
+    )
+    print(response.json())
 
 
 @project_app.command(help="Project members")
 def members(pk: UUID, api_key: API_KEY):
-    cli.project_members(api_key, pk)
+    response = send_request(
+        {
+            "method": "GET",
+            "headers": get_headers(api_key),
+            "endpoint": ENDPOINTS["cli_project_members"].format(pk),
+        }
+    )
+    print(response.json())
 
 
 @project_app.command(help="Upload data")
@@ -62,7 +87,14 @@ if __name__ == "__main__":
 def dataset_list(
     api_key: API_KEY,
 ):
-    cli.datasets(api_key)
+    response = send_request(
+        {
+            "method": "GET",
+            "headers": get_headers(api_key),
+            "endpoint": ENDPOINTS["cli_datasets"],
+        }
+    )
+    print(response.json())
 
 
 @dataset_app.command(name="download", help="Download dataset")

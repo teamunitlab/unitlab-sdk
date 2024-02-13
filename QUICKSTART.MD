@@ -22,29 +22,3 @@ Now let's add images to the project which has not been created yet completely us
     sample = client.project_upload_data(project_id, folder)
     
 We can verify them using client.project('project_id') when project is fully created and images will be added to your images to do the project.
-
-Now let's request our images to the API directly, for instance to our ai-model car-segmentation which requires payment process. Note that api-key should be in the request header such as: Api-Key "YOUR API KEY"
-#Request POST https://api.unitlab.ai/ocr/car-segmentation/:
-    {
-        "image_url":"https://unitlab-storage.s3.amazonaws.com/media/unitlaba-7373147e/taskimage/cars.jpg"
-    }
-
-#Response:
-    
-    { 
-        "annotator": "annotator@gmail.com",
-        "url": "https://unitlab-storage.s3.amazonaws.com/media/release-datasources/2dc39285-6ab2dbc328d84322a78544f2950699c8.jpg",
-        "output":[
-            "boxes": [
-            {}
-            ],
-            "meta": [
-            ],
-        ],
-        "status": "labeled",
-        "review_status": ""
-    } 
-
-You can get full list of APIs in API.MD file.
-    
-    
