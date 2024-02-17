@@ -12,7 +12,6 @@ ENDPOINTS = {
     "upload_data": "/api/sdk/upload-data/",
     "datasets": "/api/sdk/datasets/",
     "dataset": "/api/sdk/datasets/{}/",
-    "dataset_files": "/api/sdk/datasets/{}/files/",
     "cli_projects": "/api/cli/projects/",
     "cli_project": "/api/cli/projects/{}/",
     "cli_project_members": "/api/cli/projects/{}/members/",

@@ -2,7 +2,7 @@ from setuptools import find_packages, setup
 
 setup(
     name="unitlab",
-    version="2.0.0",
+    version="2.0.1",
     license="MIT",
     author="Unitlab Inc.",
     author_email="team@unitlab.ai",
@@ -32,6 +32,6 @@ setup(
         "typer",
     ],
     entry_points={
-        "console_scripts": ["unitlab=unitlab.run:app"],
+        "console_scripts": ["unitlab=unitlab.main:app"],
     },
 )

@@ -21,7 +21,7 @@ API_KEY = Annotated[str, typer.Option(help="The api-key obtained from unitlab.ai
 
 class DownloadType(str, Enum):
     annotation = "annotation"
-    zip = "zip"
+    files = "files"
 
 
 def get_client(api_key: str) -> UnitlabClient:
@@ -103,21 +103,16 @@ def dataset_download(
     api_key: API_KEY,
     download_type: Annotated[
         DownloadType,
-        typer.Option(help="Download type (annotation, file)"),
+        typer.Option(help="Download type (annotation, files)"),
     ] = DownloadType.annotation,
     export_type: Annotated[
-        str, typer.Option(help="Export type (coco, yolov8, etc)")
-    ] = "coco",
+        str, typer.Option(help="Export type (COCO, YOLOv8, YOLOv5)")
+    ] = "COCO",
 ):
-    if download_type == DownloadType.annotation and not export_type:
-        raise typer.BadParameter(
-            "Export type is required when download type is annotation"
-        )
-    get_client(api_key).dataset_download(pk, download_type.value, export_type)
-
-
-@dataset_app.command(name="download-images", help="Download dataset files")
-def download_dataset_files(
-    pk: Annotated[Optional[UUID], typer.Argument()], api_key: API_KEY
-):
-    get_client(api_key).download_dataset_images(pk)
+    if download_type == DownloadType.annotation:
+        if not export_type:
+            raise typer.BadParameter(
+                "Export type is required when download type is annotation"
+            )
+        get_client(api_key).dataset_download(pk, export_type)
+    get_client(api_key).download_dataset_files(pk)

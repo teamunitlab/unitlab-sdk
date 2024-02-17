@@ -2,8 +2,6 @@ import asyncio
 import glob
 import logging
 import os
-import uuid
-from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import aiofiles
 import aiohttp
@@ -230,65 +228,36 @@ class UnitlabClient:
         )
         return response.json()
 
-    def dataset_download(self, dataset_id, download_type, export_type="coco"):
-        if download_type == "annotation" and export_type is None:
-            raise ValueError(
-                "Please specify an export_type when download_type is annotation"
-            )
+    def dataset_download(self, dataset_id, export_type):
         response = send_request(
             {
                 "method": "POST",
                 "endpoint": ENDPOINTS["dataset"].format(dataset_id),
                 "headers": self._get_headers(),
-                "json": {"download_type": download_type, "export_type": export_type},
+                "json": {"download_type": "annotation", "export_type": export_type},
             },
             session=self.api_session,
         )
-        if download_type == "annotation":
-            with self.api_session.get(url=response.json()["file"], stream=True) as r:
-                r.raise_for_status()
-                filename = f"dataset-{dataset_id}.json"
-
-                with open(filename, "wb") as f:
-                    for chunk in r.iter_content(chunk_size=1024 * 1024):
-                        f.write(chunk)
-                logging.info(f"File: {os.path.abspath(filename)}")
-                return os.path.abspath(filename)
-        files = []
-        with ThreadPoolExecutor() as executor:
-            futures = [
-                executor.submit(
-                    self.download_file,
-                    f"{dataset_id}-{uuid.uuid4().hex[:8]}.zip",
-                    file["file"],
-                )
-                for file in response.json()
-            ]
-            for future in tqdm.tqdm(
-                as_completed(futures), total=len(futures), desc="Downloading zip files"
-            ):
-                files.append(future.result())
-        logging.info(f"Files: {', '.join([os.path.abspath(file) for file in files])}")
-        return files
-
-    def download_file(self, filename, url):
-        with self.api_session.get(url=url, stream=True) as r:
+        with self.api_session.get(url=response.json()["file"], stream=True) as r:
             r.raise_for_status()
+            filename = f"dataset-{dataset_id}.json"
             with open(filename, "wb") as f:
                 for chunk in r.iter_content(chunk_size=1024 * 1024):
                     f.write(chunk)
+            logging.info(f"File: {os.path.abspath(filename)}")
             return os.path.abspath(filename)
 
-    def download_dataset_images(self, dataset_id):
+    def download_dataset_files(self, dataset_id):
         response = send_request(
             {
                 "method": "POST",
-                "endpoint": ENDPOINTS["dataset_files"].format(dataset_id),
+                "endpoint": ENDPOINTS["dataset"].format(dataset_id),
                 "headers": self._get_headers(),
+                "json": {"download_type": "files"},
             },
             session=self.api_session,
         )
-        folder = f"dataset-images-{dataset_id}"
+        folder = f"dataset-files-{dataset_id}"
         os.makedirs(folder, exist_ok=True)
         dataset_files = [
             dataset_file
