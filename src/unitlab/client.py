@@ -8,8 +8,11 @@ import aiohttp
 import requests
 import tqdm
 
+from .dataset import DatasetUploadHandler
 from .exceptions import AuthenticationError
-from .utils import ENDPOINTS, send_request
+from .utils import BASE_URL, ENDPOINTS, send_request
+
+logger = logging.getLogger(__name__)
 
 
 class UnitlabClient:
@@ -52,7 +55,7 @@ class UnitlabClient:
                 raise AuthenticationError(
                     message="Please provide the api_key argument or set UNITLAB_API_KEY in your environment."
                 )
-            logging.info("Found a Unitlab API key in your environment.")
+            logger.info("Found a Unitlab API key in your environment.")
         self.api_key = api_key
         self.api_session = requests.Session()
         adapter = requests.adapters.HTTPAdapter(max_retries=3)
@@ -157,11 +160,11 @@ class UnitlabClient:
                         response.raise_for_status()
                         return 1 if response.status == 201 else 0
                 except aiohttp.client_exceptions.ServerDisconnectedError as e:
-                    logging.warning(f"Error: {e}: Retrying...")
+                    logger.warning(f"Error: {e}: Retrying...")
                     await asyncio.sleep(0.1)
                     continue
                 except Exception as e:
-                    logging.error(f"Error uploading file {file} - {e}")
+                    logger.error(f"Error uploading file {file} - {e}")
                     return 0
 
         async def batch_upload(
@@ -191,7 +194,7 @@ class UnitlabClient:
             for file in files:
                 file_size = os.path.getsize(file) / 1024 / 1024
                 if file_size > 6:
-                    logging.warning(
+                    logger.warning(
                         f"File {file} is too large ({file_size:.4f} megabytes) skipping, max size is 6 MB"
                     )
                     continue
@@ -200,7 +203,7 @@ class UnitlabClient:
             num_files = len(filtered_files)
             num_batches = (num_files + batch_size - 1) // batch_size
 
-            logging.info(f"Uploading {num_files} files to project {project_id}")
+            logger.info(f"Uploading {num_files} files to project {project_id}")
             with tqdm.tqdm(total=num_files, ncols=80) as pbar:
                 async with aiohttp.ClientSession(
                     headers=self._get_headers()
@@ -244,7 +247,7 @@ class UnitlabClient:
             with open(filename, "wb") as f:
                 for chunk in r.iter_content(chunk_size=1024 * 1024):
                     f.write(chunk)
-            logging.info(f"File: {os.path.abspath(filename)}")
+            logger.info(f"File: {os.path.abspath(filename)}")
             return os.path.abspath(filename)
 
     def download_dataset_files(self, dataset_id):
@@ -270,7 +273,7 @@ class UnitlabClient:
                 try:
                     r.raise_for_status()
                 except Exception as e:
-                    logging.error(
+                    logger.error(
                         f"Error downloading file {dataset_file['file_name']} - {e}"
                     )
                     return 0
@@ -292,3 +295,51 @@ class UnitlabClient:
                         pbar.update(await f)
 
         asyncio.run(main())
+
+    def create_dataset(self, name, annotation_type, categories):
+        response = self.api_session.post(
+            url=f"{BASE_URL}/api/sdk/datasets/create/",
+            headers=self._get_headers(),
+            json={
+                "name": name,
+                "annotation_type": annotation_type,
+                "classes": [
+                    {"name": category["name"], "value": category["id"]}
+                    for category in categories
+                ],
+            },
+        )
+        response.raise_for_status()
+        response = response.json()
+        return response["pk"]
+
+    def dataset_upload(
+        self, name, annotation_type, annotation_path, data_path, batch_size=100
+    ):
+        import random
+
+        handler = DatasetUploadHandler(annotation_type, annotation_path, data_path)
+        dataset_id = self.create_dataset(name, annotation_type, handler.categories)
+        img_ids = handler.getImgIds()
+        random.shuffle(img_ids)
+        image_ids = img_ids[:1000]
+        num_batches = (len(image_ids) + batch_size - 1) // batch_size
+
+        async def main():
+            with tqdm.tqdm(total=len(image_ids), ncols=80) as pbar:
+                async with aiohttp.ClientSession(
+                    headers=self._get_headers()
+                ) as session:
+                    for i in range(num_batches):
+                        tasks = []
+                        for image_id in image_ids[
+                            i * batch_size : min((i + 1) * batch_size, len(image_ids))
+                        ]:
+                            tasks.append(
+                                handler.upload_image(session, dataset_id, image_id)
+                            )
+                        for f in asyncio.as_completed(tasks):
+                            pbar.update(await f)
+
+        asyncio.run(main())
+        self.dataset_download(dataset_id, "COCO")

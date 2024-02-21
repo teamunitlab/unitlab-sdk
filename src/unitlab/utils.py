@@ -17,6 +17,7 @@ ENDPOINTS = {
     "cli_project_members": "/api/cli/projects/{}/members/",
     "cli_datasets": "/api/cli/datasets/",
 }
+BASE_URL = os.environ.get("UNITLAB_BASE_URL", "https://api.unitlab.ai")
 
 
 def send_request(request, session=None):

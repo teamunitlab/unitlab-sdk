@@ -24,6 +24,13 @@ class DownloadType(str, Enum):
     files = "files"
 
 
+class AnnotationType(str, Enum):
+    IMG_BBOX = "img_bbox"
+    IMG_POLYGON = "img_polygon"
+    IMG_SEMANTIC_SEGMENTATION = "img_semantic_segmentation"
+    IMG_SKELETON = "img_skeleton"
+
+
 def get_client(api_key: str) -> UnitlabClient:
     return UnitlabClient(api_key=api_key)
 
@@ -97,9 +104,32 @@ def dataset_list(
     print(response.json())
 
 
+@dataset_app.command(name="upload", help="Upload dataset")
+def dataset_upload(
+    api_key: API_KEY,
+    name: Annotated[str, typer.Option(help="Name of the dataset")],
+    annotation_type: Annotated[
+        AnnotationType,
+        typer.Option(
+            help="Annotation type (img_bbox, img_polygon, img_semantic_segmentation, img_skeleton)"
+        ),
+    ],
+    annotation_path: Annotated[Path, typer.Option(help="Path to the COCO json file")],
+    data_path: Annotated[
+        Path, typer.Option(help="Directory containing the data to be uploaded")
+    ],
+    batch_size: Annotated[
+        int, typer.Option(help="Batch size for uploading images")
+    ] = 100,
+):
+    get_client(api_key).dataset_upload(
+        name, annotation_type, annotation_path, data_path, batch_size
+    )
+
+
 @dataset_app.command(name="download", help="Download dataset")
 def dataset_download(
-    pk: Annotated[Optional[UUID], typer.Argument()],
+    pk: UUID,
     api_key: API_KEY,
     download_type: Annotated[
         DownloadType,
