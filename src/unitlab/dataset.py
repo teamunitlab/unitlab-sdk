@@ -278,7 +278,7 @@ class DatasetUploadHandler(COCO):
         if len(anns) == 0:
             logger.warning("No annotations found for image: {}".format(img_id))
             return
-        return getattr(self, f"get_{self.annotation_type}_payload")(anns)
+        return self.get_img_bbox_payload(anns)
 
     async def upload_image(self, session, dataset_id, image_id):
         image = self.loadImgs(image_id)[0]
