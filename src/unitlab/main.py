@@ -25,10 +25,10 @@ class DownloadType(str, Enum):
 
 
 class AnnotationType(str, Enum):
-    IMG_BBOX = "img_bbox"
-    IMG_POLYGON = "img_polygon"
-    IMG_SEMANTIC_SEGMENTATION = "img_semantic_segmentation"
-    IMG_SKELETON = "img_skeleton"
+    img_bbox = "img_bbox"
+    img_polygon = "img_polygon"
+    img_semantic_segmentation = "img_semantic_segmentation"
+    img_skeleton = "img_skeleton"
 
 
 def get_client(api_key: str) -> UnitlabClient:
