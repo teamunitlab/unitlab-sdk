@@ -1,13 +1,11 @@
 from enum import Enum
 from pathlib import Path
-from typing import Optional
 from uuid import UUID
 
 import typer
 from typing_extensions import Annotated
 
 from .client import UnitlabClient
-from .utils import ENDPOINTS, send_request
 
 app = typer.Typer()
 project_app = typer.Typer()
@@ -25,10 +23,10 @@ class DownloadType(str, Enum):
 
 
 class AnnotationType(str, Enum):
-    img_bbox = "img_bbox"
-    img_polygon = "img_polygon"
-    img_semantic_segmentation = "img_semantic_segmentation"
-    img_skeleton = "img_skeleton"
+    IMG_BBOX = "img_bbox"
+    IMG_POLYGON = "img_polygon"
+    IMG_SEMANTIC_SEGMENTATION = "img_semantic_segmentation"
+    IMG_SKELETON = "img_skeleton"
 
 
 def get_client(api_key: str) -> UnitlabClient:
@@ -41,38 +39,17 @@ def get_headers(api_key):
 
 @project_app.command(name="list", help="Project list")
 def project_list(api_key: API_KEY):
-    response = send_request(
-        {
-            "method": "GET",
-            "headers": get_headers(api_key),
-            "endpoint": ENDPOINTS["cli_projects"],
-        }
-    )
-    print(response.json())
+    print(get_client(api_key).projects(pretty=1))
 
 
 @project_app.command(name="detail", help="Project detail")
 def project_detail(pk: UUID, api_key: API_KEY):
-    response = send_request(
-        {
-            "method": "GET",
-            "headers": get_headers(api_key),
-            "endpoint": ENDPOINTS["cli_project"].format(pk),
-        }
-    )
-    print(response.json())
+    print(get_client(api_key).project(project_id=pk, pretty=1))
 
 
 @project_app.command(help="Project members")
 def members(pk: UUID, api_key: API_KEY):
-    response = send_request(
-        {
-            "method": "GET",
-            "headers": get_headers(api_key),
-            "endpoint": ENDPOINTS["cli_project_members"].format(pk),
-        }
-    )
-    print(response.json())
+    print(get_client(api_key).project_members(project_id=pk, pretty=1))
 
 
 @project_app.command(help="Upload data")
@@ -94,14 +71,7 @@ if __name__ == "__main__":
 def dataset_list(
     api_key: API_KEY,
 ):
-    response = send_request(
-        {
-            "method": "GET",
-            "headers": get_headers(api_key),
-            "endpoint": ENDPOINTS["cli_datasets"],
-        }
-    )
-    print(response.json())
+    print(get_client(api_key).datasets(pretty=1))
 
 
 @dataset_app.command(name="upload", help="Upload dataset")
@@ -118,12 +88,9 @@ def dataset_upload(
     data_path: Annotated[
         Path, typer.Option(help="Directory containing the data to be uploaded")
     ],
-    batch_size: Annotated[
-        int, typer.Option(help="Batch size for uploading images")
-    ] = 100,
 ):
     get_client(api_key).dataset_upload(
-        name, annotation_type, annotation_path, data_path, batch_size
+        name, annotation_type.value, annotation_path, data_path
     )
 
 

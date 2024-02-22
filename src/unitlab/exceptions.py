@@ -23,3 +23,9 @@ class AuthenticationError(UnitlabError):
     """Raised when an API key fails authentication."""
 
     pass
+
+
+class NetworkError(UnitlabError):
+    """Raised when an HTTP error occurs."""
+
+    pass

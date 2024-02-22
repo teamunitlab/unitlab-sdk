@@ -1,3 +1,4 @@
+import asyncio
 import itertools
 import json
 import logging
@@ -6,8 +7,6 @@ from collections import defaultdict
 
 import aiofiles
 import aiohttp
-
-from .utils import BASE_URL
 
 logger = logging.getLogger(__name__)
 
@@ -278,9 +277,9 @@ class DatasetUploadHandler(COCO):
         if len(anns) == 0:
             logger.warning("No annotations found for image: {}".format(img_id))
             return
-        return self.get_img_bbox_payload(anns)
+        return getattr(self, f"get_{self.annotation_type}_payload")(anns)
 
-    async def upload_image(self, session, dataset_id, image_id):
+    async def upload_image(self, session, url, image_id):
         image = self.loadImgs(image_id)[0]
         file_name = image["file_name"]
         payload = self.get_payload(image_id)
@@ -292,10 +291,9 @@ class DatasetUploadHandler(COCO):
                     form_data = aiohttp.FormData()
                     form_data.add_field("file", await f.read(), filename=file_name)
                     form_data.add_field("result", self.get_payload(image_id))
-                    async with session.post(
-                        f"{BASE_URL}/api/sdk/datasets/{dataset_id}/upload/",
-                        data=form_data,
-                    ) as response:
+                    # rate limiting
+                    await asyncio.sleep(0.1)
+                    async with session.post(url, data=form_data) as response:
                         response.raise_for_status()
                         return 1
             except Exception as e:

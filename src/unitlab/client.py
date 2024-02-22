@@ -2,6 +2,7 @@ import asyncio
 import glob
 import logging
 import os
+import urllib.parse
 
 import aiofiles
 import aiohttp
@@ -9,10 +10,26 @@ import requests
 import tqdm
 
 from .dataset import DatasetUploadHandler
-from .exceptions import AuthenticationError
-from .utils import BASE_URL, ENDPOINTS, send_request
+from .exceptions import AuthenticationError, NetworkError
 
 logger = logging.getLogger(__name__)
+
+
+def handle_exceptions(f):
+    def throw_exception(*args, **kwargs):
+        try:
+            r = f(*args, **kwargs)
+            r_status = r.status_code
+            if r_status == 400:
+                raise AuthenticationError(
+                    "Please provide the api_key argument or set UNITLAB_API_KEY in your environment."
+                )
+            r.raise_for_status()
+            return r.json()
+        except requests.exceptions.RequestException as e:
+            raise NetworkError(str(e))
+
+    return throw_exception
 
 
 class UnitlabClient:
@@ -48,7 +65,7 @@ class UnitlabClient:
         :exc:`~unitlab.exceptions.AuthenticationError`: If an invalid API key is used or (when not passing the API key directly) if ``UNITLAB_API_KEY`` is not found in your environment.
     """
 
-    def __init__(self, api_key: str = None):
+    def __init__(self, api_key: str = None, api_url: str = None):
         if api_key is None:
             api_key = os.getenv("UNITLAB_API_KEY")
             if api_key is None:
@@ -56,7 +73,11 @@ class UnitlabClient:
                     message="Please provide the api_key argument or set UNITLAB_API_KEY in your environment."
                 )
             logger.info("Found a Unitlab API key in your environment.")
+        if api_url is None:
+            self.api_url = os.environ.get("UNITLAB_BASE_URL", "https://api.unitlab.ai")
+
         self.api_key = api_key
+        self.api_url = api_url
         self.api_session = requests.Session()
         adapter = requests.adapters.HTTPAdapter(max_retries=3)
         self.api_session.mount("http://", adapter)
@@ -96,53 +117,32 @@ class UnitlabClient:
     def _get_headers(self):
         return {"Authorization": f"Api-Key {self.api_key}"} if self.api_key else None
 
-    def projects(self):
-        response = send_request(
-            {
-                "method": "GET",
-                "endpoint": ENDPOINTS["projects"],
-                "headers": self._get_headers(),
-            },
-            session=self.api_session,
+    @handle_exceptions
+    def _get(self, endpoint):
+        return self.api_session.get(
+            urllib.parse.urljoin(self.api_url, endpoint), headers=self._get_headers()
         )
-        return response.json()
 
-    def project(self, project_id):
-        response = send_request(
-            {
-                "method": "GET",
-                "endpoint": ENDPOINTS["project"].format(project_id),
-                "headers": self._get_headers(),
-            },
-            session=self.api_session,
+    @handle_exceptions
+    def _post(self, endpoint, data):
+        return self.api_session.post(
+            urllib.parse.urljoin(self.api_url, endpoint),
+            json=data,
+            headers=self._get_headers(),
         )
-        return response.json()
 
-    def project_members(self, project_id):
-        response = send_request(
-            {
-                "method": "GET",
-                "endpoint": ENDPOINTS["project_members"].format(project_id),
-                "headers": self._get_headers(),
-            },
-            session=self.api_session,
-        )
-        return response.json()
+    def projects(self, pretty=0):
+        return self._get(f"/api/sdk/projects/?pretty={pretty}")
+
+    def project(self, project_id, pretty=0):
+        return self._get(f"/api/sdk/projects/{project_id}/?pretty={pretty}")
+
+    def project_members(self, project_id, pretty=0):
+        return self._get(f"/api/sdk/projects/{project_id}/members/?pretty={pretty}")
 
     def upload_data(self, project_id, directory, batch_size=100):
         if not os.path.isdir(directory):
             raise ValueError(f"Directory {directory} does not exist")
-
-        # set correct host
-        send_request(
-            {
-                "method": "GET",
-                "endpoint": ENDPOINTS["check"],
-                "headers": self._get_headers(),
-            },
-            session=self.api_session,
-        )
-        URL = os.environ["UNITLAB_BASE_URL"] + ENDPOINTS["upload_data"]
 
         async def post_file(
             session: aiohttp.ClientSession, file: str, project_id: str, retries=3
@@ -152,13 +152,15 @@ class UnitlabClient:
                     with open(file, "rb") as f:
                         response = await session.request(
                             "POST",
-                            url=URL,
+                            url=urllib.parse.urljoin(
+                                self.api_url, "/api/sdk/upload-data/"
+                            ),
                             data=aiohttp.FormData(
                                 fields={"project": project_id, "file": f}
                             ),
                         )
                         response.raise_for_status()
-                        return 1 if response.status == 201 else 0
+                        return 1
                 except aiohttp.client_exceptions.ServerDisconnectedError as e:
                     logger.warning(f"Error: {e}: Retrying...")
                     await asyncio.sleep(0.1)
@@ -166,20 +168,6 @@ class UnitlabClient:
                 except Exception as e:
                     logger.error(f"Error uploading file {file} - {e}")
                     return 0
-
-        async def batch_upload(
-            session: aiohttp.ClientSession,
-            batch: list,
-            project_id: str,
-            pbar: tqdm.tqdm,
-        ):
-            tasks = []
-            for file in batch:
-                tasks.append(
-                    post_file(session=session, file=file, project_id=project_id)
-                )
-            for f in asyncio.as_completed(tasks):
-                pbar.update(await f)
 
         async def main():
             files = [
@@ -209,39 +197,30 @@ class UnitlabClient:
                     headers=self._get_headers()
                 ) as session:
                     for i in range(num_batches):
-                        await batch_upload(
-                            session,
-                            filtered_files[
-                                i * batch_size : min((i + 1) * batch_size, num_files)
-                            ],
-                            project_id,
-                            pbar,
-                        )
+                        tasks = []
+                        for file in filtered_files[
+                            i * batch_size : min((i + 1) * batch_size, num_files)
+                        ]:
+                            tasks.append(
+                                post_file(
+                                    session=session, file=file, project_id=project_id
+                                )
+                            )
+                        for f in asyncio.as_completed(tasks):
+                            pbar.update(await f)
 
         asyncio.run(main())
 
-    def datasets(self):
-        response = send_request(
-            {
-                "method": "GET",
-                "endpoint": ENDPOINTS["datasets"],
-                "headers": self._get_headers(),
-            },
-            session=self.api_session,
-        )
-        return response.json()
+    def datasets(self, pretty=0):
+        return self._get(f"/api/sdk/datasets/?pretty={pretty}")
 
     def dataset_download(self, dataset_id, export_type):
-        response = send_request(
-            {
-                "method": "POST",
-                "endpoint": ENDPOINTS["dataset"].format(dataset_id),
-                "headers": self._get_headers(),
-                "json": {"download_type": "annotation", "export_type": export_type},
-            },
-            session=self.api_session,
+        response = self._post(
+            f"/api/sdk/datasets/{dataset_id}/",
+            data={"download_type": "annotation", "export_type": export_type},
         )
-        with self.api_session.get(url=response.json()["file"], stream=True) as r:
+
+        with self.api_session.get(url=response["file"], stream=True) as r:
             r.raise_for_status()
             filename = f"dataset-{dataset_id}.json"
             with open(filename, "wb") as f:
@@ -251,20 +230,14 @@ class UnitlabClient:
             return os.path.abspath(filename)
 
     def download_dataset_files(self, dataset_id):
-        response = send_request(
-            {
-                "method": "POST",
-                "endpoint": ENDPOINTS["dataset"].format(dataset_id),
-                "headers": self._get_headers(),
-                "json": {"download_type": "files"},
-            },
-            session=self.api_session,
+        response = self._post(
+            f"/api/sdk/datasets/{dataset_id}/", data={"download_type": "files"}
         )
         folder = f"dataset-files-{dataset_id}"
         os.makedirs(folder, exist_ok=True)
         dataset_files = [
             dataset_file
-            for dataset_file in response.json()
+            for dataset_file in response
             if not os.path.isfile(os.path.join(folder, dataset_file["file_name"]))
         ]
 
@@ -285,22 +258,21 @@ class UnitlabClient:
                     return 1
 
         async def main():
-            async with aiohttp.ClientSession() as session:
-                tasks = [
-                    download_file(session=session, dataset_file=dataset_file)
-                    for dataset_file in dataset_files
-                ]
-                with tqdm.tqdm(total=len(dataset_files), ncols=80) as pbar:
+            with tqdm.tqdm(total=len(dataset_files), ncols=80) as pbar:
+                async with aiohttp.ClientSession() as session:
+                    tasks = [
+                        download_file(session=session, dataset_file=dataset_file)
+                        for dataset_file in dataset_files
+                    ]
                     for f in asyncio.as_completed(tasks):
                         pbar.update(await f)
 
         asyncio.run(main())
 
     def create_dataset(self, name, annotation_type, categories):
-        response = self.api_session.post(
-            url=f"{BASE_URL}/api/sdk/datasets/create/",
-            headers=self._get_headers(),
-            json={
+        response = self._post(
+            "/api/sdk/datasets/create/",
+            data={
                 "name": name,
                 "annotation_type": annotation_type,
                 "classes": [
@@ -309,35 +281,29 @@ class UnitlabClient:
                 ],
             },
         )
-        response.raise_for_status()
-        response = response.json()
         return response["pk"]
 
     def dataset_upload(
-        self, name, annotation_type, annotation_path, data_path, batch_size=100
+        self, name, annotation_type, annotation_path, data_path, batch_size=15
     ):
-        import random
-
         handler = DatasetUploadHandler(annotation_type, annotation_path, data_path)
         dataset_id = self.create_dataset(name, annotation_type, handler.categories)
-        img_ids = handler.getImgIds()
-        random.shuffle(img_ids)
-        image_ids = img_ids[:1000]
-        num_batches = (len(image_ids) + batch_size - 1) // batch_size
+        image_ids = handler.getImgIds()
+        url = urllib.parse.urljoin(
+            self.api_url, f"/api/sdk/datasets/{dataset_id}/upload/"
+        )
 
         async def main():
             with tqdm.tqdm(total=len(image_ids), ncols=80) as pbar:
                 async with aiohttp.ClientSession(
                     headers=self._get_headers()
                 ) as session:
-                    for i in range(num_batches):
+                    for i in range((len(image_ids) + batch_size - 1) // batch_size):
                         tasks = []
                         for image_id in image_ids[
                             i * batch_size : min((i + 1) * batch_size, len(image_ids))
                         ]:
-                            tasks.append(
-                                handler.upload_image(session, dataset_id, image_id)
-                            )
+                            tasks.append(handler.upload_image(session, url, image_id))
                         for f in asyncio.as_completed(tasks):
                             pbar.update(await f)
 
