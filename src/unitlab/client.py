@@ -74,7 +74,7 @@ class UnitlabClient:
                 )
             logger.info("Found a Unitlab API key in your environment.")
         if api_url is None:
-            self.api_url = os.environ.get("UNITLAB_BASE_URL", "https://api.unitlab.ai")
+            api_url = os.environ.get("UNITLAB_BASE_URL", "https://api.unitlab.ai")
 
         self.api_key = api_key
         self.api_url = api_url
@@ -144,53 +144,54 @@ class UnitlabClient:
         if not os.path.isdir(directory):
             raise ValueError(f"Directory {directory} does not exist")
 
+        files = [
+            file
+            for files_list in (
+                glob.glob(os.path.join(directory, "") + extension)
+                for extension in ["*jpg", "*png", "*jpeg", "*webp"]
+            )
+            for file in files_list
+        ]
+        filtered_files = []
+        for file in files:
+            file_size = os.path.getsize(file) / 1024 / 1024
+            if file_size > 6:
+                logger.warning(
+                    f"File {file} is too large ({file_size:.4f} megabytes) skipping, max size is 6 MB"
+                )
+                continue
+            filtered_files.append(file)
+
+        num_files = len(filtered_files)
+        num_batches = (num_files + batch_size - 1) // batch_size
+
         async def post_file(
             session: aiohttp.ClientSession, file: str, project_id: str, retries=3
         ):
-            for _ in range(retries):
-                try:
-                    with open(file, "rb") as f:
-                        response = await session.request(
-                            "POST",
-                            url=urllib.parse.urljoin(
-                                self.api_url, "/api/sdk/upload-data/"
-                            ),
-                            data=aiohttp.FormData(
-                                fields={"project": project_id, "file": f}
-                            ),
-                        )
-                        response.raise_for_status()
-                        return 1
-                except aiohttp.client_exceptions.ServerDisconnectedError as e:
-                    logger.warning(f"Error: {e}: Retrying...")
-                    await asyncio.sleep(0.1)
-                    continue
-                except Exception as e:
-                    logger.error(f"Error uploading file {file} - {e}")
-                    return 0
+            async with aiofiles.open(file, "rb") as f:
+                form_data = aiohttp.FormData()
+                form_data.add_field("project", project_id)
+                form_data.add_field(
+                    "file", await f.read(), filename=os.path.basename(file)
+                )
+                for _ in range(retries):
+                    try:
+                        await asyncio.sleep(0.1)
+                        async with session.post(
+                            urllib.parse.urljoin(self.api_url, "/api/sdk/upload-data/"),
+                            data=form_data,
+                        ) as response:
+                            response.raise_for_status()
+                            return 1
+                    except aiohttp.ServerDisconnectedError as e:
+                        logger.warning(f"Server disconnected: {e}, Retrying...")
+                        await asyncio.sleep(0.1)
+                        continue
+                    except Exception as e:
+                        logger.error(f"Error uploading file {file} - {e}")
+                        return 0
 
         async def main():
-            files = [
-                file
-                for files_list in (
-                    glob.glob(os.path.join(directory, "") + extension)
-                    for extension in ["*jpg", "*png", "*jpeg", "*webp"]
-                )
-                for file in files_list
-            ]
-            filtered_files = []
-            for file in files:
-                file_size = os.path.getsize(file) / 1024 / 1024
-                if file_size > 6:
-                    logger.warning(
-                        f"File {file} is too large ({file_size:.4f} megabytes) skipping, max size is 6 MB"
-                    )
-                    continue
-                filtered_files.append(file)
-
-            num_files = len(filtered_files)
-            num_batches = (num_files + batch_size - 1) // batch_size
-
             logger.info(f"Uploading {num_files} files to project {project_id}")
             with tqdm.tqdm(total=num_files, ncols=80) as pbar:
                 async with aiohttp.ClientSession(

@@ -131,7 +131,7 @@ class COCO:
                     if ann["area"] > areaRng[0] and ann["area"] < areaRng[1]
                 ]
             )
-        if not iscrowd == None:
+        if iscrowd:
             ids = [ann["id"] for ann in anns if ann["iscrowd"] == iscrowd]
         else:
             ids = [ann["id"] for ann in anns]
@@ -200,7 +200,7 @@ class COCO:
         """
         if self._is_array_like(ids):
             return [self.anns[id] for id in ids]
-        elif type(ids) == int:
+        elif isinstance(ids, int):
             return [self.anns[ids]]
 
     def loadCats(self, ids=[]):
@@ -211,7 +211,7 @@ class COCO:
         """
         if self._is_array_like(ids):
             return [self.cats[id] for id in ids]
-        elif type(ids) == int:
+        elif isinstance(ids, int):
             return [self.cats[ids]]
 
     def loadImgs(self, ids=[]):
@@ -222,7 +222,7 @@ class COCO:
         """
         if self._is_array_like(ids):
             return [self.imgs[id] for id in ids]
-        elif type(ids) == int:
+        elif isinstance(ids, int):
             return [self.imgs[ids]]
 
 
@@ -279,23 +279,27 @@ class DatasetUploadHandler(COCO):
             return
         return getattr(self, f"get_{self.annotation_type}_payload")(anns)
 
-    async def upload_image(self, session, url, image_id):
+    async def upload_image(self, session, url, image_id, retries=3):
         image = self.loadImgs(image_id)[0]
         file_name = image["file_name"]
         payload = self.get_payload(image_id)
         if payload:
-            try:
-                async with aiofiles.open(
-                    os.path.join(self.data_path, file_name), "rb"
-                ) as f:
-                    form_data = aiohttp.FormData()
-                    form_data.add_field("file", await f.read(), filename=file_name)
-                    form_data.add_field("result", self.get_payload(image_id))
-                    # rate limiting
-                    await asyncio.sleep(0.1)
-                    async with session.post(url, data=form_data) as response:
-                        response.raise_for_status()
-                        return 1
-            except Exception as e:
-                logger.error(f"Error uploading file {file_name} - {e}")
+            async with aiofiles.open(
+                os.path.join(self.data_path, file_name), "rb"
+            ) as f:
+                form_data = aiohttp.FormData()
+                form_data.add_field("file", await f.read(), filename=file_name)
+                form_data.add_field("result", self.get_payload(image_id))
+                for _ in range(retries):
+                    try:
+                        await asyncio.sleep(0.1)
+                        async with session.post(url, data=form_data) as response:
+                            response.raise_for_status()
+                            return 1
+                    except aiohttp.ServerDisconnectedError as e:
+                        logger.warning(f"Server disconnected - {e}, retrying...")
+                        await asyncio.sleep(0.1)
+                        continue
+                    except Exception as e:
+                        logger.error(f"Error uploading file {file_name} - {e}")
         return 0
