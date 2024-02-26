@@ -10,7 +10,7 @@ import requests
 import tqdm
 
 from .dataset import DatasetUploadHandler
-from .exceptions import AuthenticationError, NetworkError
+from .exceptions import AuthenticationError, NetworkError, SubscriptionError
 
 logger = logging.getLogger(__name__)
 
@@ -165,31 +165,24 @@ class UnitlabClient:
         num_files = len(filtered_files)
         num_batches = (num_files + batch_size - 1) // batch_size
 
-        async def post_file(
-            session: aiohttp.ClientSession, file: str, project_id: str, retries=3
-        ):
+        async def post_file(session: aiohttp.ClientSession, file: str, project_id: str):
             async with aiofiles.open(file, "rb") as f:
                 form_data = aiohttp.FormData()
                 form_data.add_field("project", project_id)
                 form_data.add_field(
                     "file", await f.read(), filename=os.path.basename(file)
                 )
-                for _ in range(retries):
-                    try:
-                        await asyncio.sleep(0.1)
-                        async with session.post(
-                            urllib.parse.urljoin(self.api_url, "/api/sdk/upload-data/"),
-                            data=form_data,
-                        ) as response:
-                            response.raise_for_status()
-                            return 1
-                    except aiohttp.ServerDisconnectedError as e:
-                        logger.warning(f"Server disconnected: {e}, Retrying...")
-                        await asyncio.sleep(0.1)
-                        continue
-                    except Exception as e:
-                        logger.error(f"Error uploading file {file} - {e}")
-                        return 0
+                try:
+                    await asyncio.sleep(0.1)
+                    async with session.post(
+                        urllib.parse.urljoin(self.api_url, "/api/sdk/upload-data/"),
+                        data=form_data,
+                    ) as response:
+                        response.raise_for_status()
+                        return 1
+                except Exception as e:
+                    logger.error(f"Error uploading file {file} - {e}")
+                    return 0
 
         async def main():
             logger.info(f"Uploading {num_files} files to project {project_id}")
@@ -299,14 +292,24 @@ class UnitlabClient:
                 async with aiohttp.ClientSession(
                     headers=self._get_headers()
                 ) as session:
-                    for i in range((len(image_ids) + batch_size - 1) // batch_size):
-                        tasks = []
-                        for image_id in image_ids[
-                            i * batch_size : min((i + 1) * batch_size, len(image_ids))
-                        ]:
-                            tasks.append(handler.upload_image(session, url, image_id))
-                        for f in asyncio.as_completed(tasks):
-                            pbar.update(await f)
+                    try:
+                        for i in range((len(image_ids) + batch_size - 1) // batch_size):
+                            tasks = []
+                            for image_id in image_ids[
+                                i * batch_size : min(
+                                    (i + 1) * batch_size, len(image_ids)
+                                )
+                            ]:
+                                tasks.append(
+                                    handler.upload_image(session, url, image_id)
+                                )
+                            for f in asyncio.as_completed(tasks):
+                                try:
+                                    pbar.update(await f)
+                                except SubscriptionError as e:
+                                    raise e
+                    except SubscriptionError as e:
+                        raise e
 
         asyncio.run(main())
         self.dataset_download(dataset_id, "COCO")

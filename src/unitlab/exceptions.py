@@ -29,3 +29,9 @@ class NetworkError(UnitlabError):
     """Raised when an HTTP error occurs."""
 
     pass
+
+
+class SubscriptionError(NetworkError):
+    """Raised when a subscription error occurs"""
+
+    pass

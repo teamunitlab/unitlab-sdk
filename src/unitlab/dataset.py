@@ -8,6 +8,8 @@ from collections import defaultdict
 import aiofiles
 import aiohttp
 
+from .exceptions import SubscriptionError
+
 logger = logging.getLogger(__name__)
 
 
@@ -279,7 +281,7 @@ class DatasetUploadHandler(COCO):
             return
         return getattr(self, f"get_{self.annotation_type}_payload")(anns)
 
-    async def upload_image(self, session, url, image_id, retries=3):
+    async def upload_image(self, session, url, image_id):
         image = self.loadImgs(image_id)[0]
         file_name = image["file_name"]
         payload = self.get_payload(image_id)
@@ -290,16 +292,18 @@ class DatasetUploadHandler(COCO):
                 form_data = aiohttp.FormData()
                 form_data.add_field("file", await f.read(), filename=file_name)
                 form_data.add_field("result", self.get_payload(image_id))
-                for _ in range(retries):
-                    try:
-                        await asyncio.sleep(0.1)
-                        async with session.post(url, data=form_data) as response:
-                            response.raise_for_status()
-                            return 1
-                    except aiohttp.ServerDisconnectedError as e:
-                        logger.warning(f"Server disconnected - {e}, retrying...")
-                        await asyncio.sleep(0.1)
-                        continue
-                    except Exception as e:
-                        logger.error(f"Error uploading file {file_name} - {e}")
+                try:
+                    # rate limiting
+                    await asyncio.sleep(0.1)
+                    async with session.post(url, data=form_data) as response:
+                        if response.status == 403:
+                            raise SubscriptionError(
+                                "You have reached the maximum number of datasources for your subscription."
+                            )
+                        response.raise_for_status()
+                        return 1
+                except SubscriptionError as e:
+                    raise e
+                except Exception as e:
+                    logger.error(f"Error uploading file {file_name} - {e}")
         return 0
