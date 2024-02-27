@@ -19,11 +19,8 @@ def handle_exceptions(f):
     def throw_exception(*args, **kwargs):
         try:
             r = f(*args, **kwargs)
-            r_status = r.status_code
-            if r_status == 400:
-                raise AuthenticationError(
-                    "Please provide the api_key argument or set UNITLAB_API_KEY in your environment."
-                )
+            if r.status_code == 401:
+                raise AuthenticationError("Authentication failed")
             r.raise_for_status()
             return r.json()
         except requests.exceptions.RequestException as e:
@@ -208,6 +205,9 @@ class UnitlabClient:
     def datasets(self, pretty=0):
         return self._get(f"/api/sdk/datasets/?pretty={pretty}")
 
+    def licenses(self):
+        return self._get("/api/sdk/licenses/")
+
     def dataset_download(self, dataset_id, export_type):
         response = self._post(
             f"/api/sdk/datasets/{dataset_id}/",
@@ -263,7 +263,7 @@ class UnitlabClient:
 
         asyncio.run(main())
 
-    def create_dataset(self, name, annotation_type, categories):
+    def create_dataset(self, name, annotation_type, categories, license_id=None):
         response = self._post(
             "/api/sdk/datasets/create/",
             data={
@@ -273,15 +273,24 @@ class UnitlabClient:
                     {"name": category["name"], "value": category["id"]}
                     for category in categories
                 ],
+                "license": license_id,
             },
         )
         return response["pk"]
 
     def dataset_upload(
-        self, name, annotation_type, annotation_path, data_path, batch_size=15
+        self,
+        name,
+        annotation_type,
+        annotation_path,
+        data_path,
+        license_id=None,
+        batch_size=15,
     ):
         handler = DatasetUploadHandler(annotation_type, annotation_path, data_path)
-        dataset_id = self.create_dataset(name, annotation_type, handler.categories)
+        dataset_id = self.create_dataset(
+            name, annotation_type, handler.categories, license_id=license_id
+        )
         image_ids = handler.getImgIds()
         url = urllib.parse.urljoin(
             self.api_url, f"/api/sdk/datasets/{dataset_id}/upload/"

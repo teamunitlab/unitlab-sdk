@@ -89,8 +89,27 @@ def dataset_upload(
         Path, typer.Option(help="Directory containing the data to be uploaded")
     ],
 ):
-    get_client(api_key).dataset_upload(
-        name, annotation_type.value, annotation_path, data_path
+    client = get_client(api_key)
+    licenses = client.licenses()
+    chosen_license = None
+    if licenses:
+        LicenseEnum = Enum(
+            "LicenseEnum",
+            {license["pk"]: str(idx) for idx, license in enumerate(licenses)},
+        )
+        help_prompt = ", ".join(
+            f"{idx}: {license['name']}" for idx, license in enumerate(licenses)
+        )
+        chosen_license = typer.prompt(
+            f"Select license {help_prompt}",
+            type=LicenseEnum,
+        )
+    client.dataset_upload(
+        name,
+        annotation_type.value,
+        annotation_path,
+        data_path,
+        license_id=chosen_license.name if chosen_license else None,
     )
 
 
