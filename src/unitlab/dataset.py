@@ -251,15 +251,38 @@ class DatasetUploadHandler(COCO):
             predicted_classes.add(
                 self.original_category_referecences.get(ann["category_id"])
             )
-        payload = {"bboxes": [bboxes]}
-        payload["predicted_classes"] = list(predicted_classes)
-        payload["classes"] = self.classes
-        return json.dumps(payload)
-
-    def get_img_polygon_payload(self, anns):
-        logger.warning("Not implemented yet")
+        return json.dumps(
+            {
+                "bboxes": [bboxes],
+                "predicted_classes": list(predicted_classes),
+                "classes": self.classes,
+            }
+        )
 
     def get_img_semantic_segmentation_payload(self, anns):
+        predicted_classes = set()
+        annotations = []
+        for ann in anns:
+            annotations.append(
+                {
+                    "segmentation": ann["segmentation"],
+                    "category_id": self.original_category_referecences.get(
+                        ann["category_id"]
+                    ),
+                }
+            )
+            predicted_classes.add(
+                self.original_category_referecences.get(ann["category_id"])
+            )
+        return json.dumps(
+            {
+                "annotations": annotations,
+                "predicted_classes": list(predicted_classes),
+                "classes": self.classes,
+            }
+        )
+
+    def get_img_polygon_payload(self, anns):
         logger.warning("Not implemented yet")
 
     def get_img_skeleton_payload(self, anns):
