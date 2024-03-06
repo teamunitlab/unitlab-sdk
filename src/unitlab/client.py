@@ -9,24 +9,10 @@ import aiohttp
 import requests
 import tqdm
 
+from . import exceptions, utils
 from .dataset import DatasetUploadHandler
-from .exceptions import AuthenticationError, NetworkError, SubscriptionError
 
 logger = logging.getLogger(__name__)
-
-
-def handle_exceptions(f):
-    def throw_exception(*args, **kwargs):
-        try:
-            r = f(*args, **kwargs)
-            if r.status_code == 401:
-                raise AuthenticationError("Authentication failed")
-            r.raise_for_status()
-            return r.json()
-        except requests.exceptions.RequestException as e:
-            raise NetworkError(str(e))
-
-    return throw_exception
 
 
 class UnitlabClient:
@@ -64,14 +50,9 @@ class UnitlabClient:
 
     def __init__(self, api_key: str = None, api_url: str = None):
         if api_key is None:
-            api_key = os.getenv("UNITLAB_API_KEY")
-            if api_key is None:
-                raise AuthenticationError(
-                    message="Please provide the api_key argument or set UNITLAB_API_KEY in your environment."
-                )
-            logger.info("Found a Unitlab API key in your environment.")
+            api_key = utils.get_api_key()
         if api_url is None:
-            api_url = os.environ.get("UNITLAB_BASE_URL", "https://api.unitlab.ai")
+            api_url = utils.get_api_url()
 
         self.api_key = api_key
         self.api_url = api_url
@@ -114,13 +95,13 @@ class UnitlabClient:
     def _get_headers(self):
         return {"Authorization": f"Api-Key {self.api_key}"} if self.api_key else None
 
-    @handle_exceptions
+    @utils.handle_exceptions
     def _get(self, endpoint):
         return self.api_session.get(
             urllib.parse.urljoin(self.api_url, endpoint), headers=self._get_headers()
         )
 
-    @handle_exceptions
+    @utils.handle_exceptions
     def _post(self, endpoint, data):
         return self.api_session.post(
             urllib.parse.urljoin(self.api_url, endpoint),
@@ -315,9 +296,9 @@ class UnitlabClient:
                             for f in asyncio.as_completed(tasks):
                                 try:
                                     pbar.update(await f)
-                                except SubscriptionError as e:
+                                except exceptions.SubscriptionError as e:
                                     raise e
-                    except SubscriptionError as e:
+                    except exceptions.SubscriptionError as e:
                         raise e
 
         asyncio.run(main())

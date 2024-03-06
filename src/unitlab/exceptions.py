@@ -19,6 +19,12 @@ class UnitlabError(Exception):
         return self.message
 
 
+class ConfigurationError(UnitlabError):
+    """Raised when a configuration error occurs."""
+
+    pass
+
+
 class AuthenticationError(UnitlabError):
     """Raised when an API key fails authentication."""
 

@@ -3,9 +3,11 @@ from pathlib import Path
 from uuid import UUID
 
 import typer
+import validators
 from typing_extensions import Annotated
 
 from .client import UnitlabClient
+from .utils import get_api_key, write_config
 
 app = typer.Typer()
 project_app = typer.Typer()
@@ -14,7 +16,13 @@ dataset_app = typer.Typer()
 app.add_typer(project_app, name="project", help="Project commands")
 app.add_typer(dataset_app, name="dataset", help="Dataset commands")
 
-API_KEY = Annotated[str, typer.Option(help="The api-key obtained from unitlab.ai")]
+
+API_KEY = Annotated[
+    str,
+    typer.Option(
+        default_factory=get_api_key, help="The api-key obtained from unitlab.ai"
+    ),
+]
 
 
 class DownloadType(str, Enum):
@@ -29,12 +37,18 @@ class AnnotationType(str, Enum):
     IMG_SKELETON = "img_skeleton"
 
 
+@app.command()
+def configure(
+    api_key: Annotated[str, typer.Option(help="The api-key obtained from unitlab.ai")],
+    api_url: Annotated[str, typer.Option()] = "https://api.unitlab.ai",
+):
+    if not validators.url(api_url, simple_host=True):
+        raise typer.BadParameter("Invalid api url")
+    write_config(api_key=api_key, api_url=api_url)
+
+
 def get_client(api_key: str) -> UnitlabClient:
     return UnitlabClient(api_key=api_key)
-
-
-def get_headers(api_key):
-    return {"Authorization": f"Api-Key {api_key}"}
 
 
 @project_app.command(name="list", help="Project list")
@@ -63,14 +77,8 @@ def upload(
     get_client(api_key).upload_data(str(pk), directory=directory)
 
 
-if __name__ == "__main__":
-    app()
-
-
 @dataset_app.command(name="list", help="List datasets")
-def dataset_list(
-    api_key: API_KEY,
-):
+def dataset_list(api_key: API_KEY):
     print(get_client(api_key).datasets(pretty=1))
 
 
@@ -132,3 +140,7 @@ def dataset_download(
             )
         get_client(api_key).dataset_download(pk, export_type)
     get_client(api_key).download_dataset_files(pk)
+
+
+if __name__ == "__main__":
+    app()
