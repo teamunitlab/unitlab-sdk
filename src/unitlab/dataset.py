@@ -42,6 +42,7 @@ class COCO:
         if self.annotation_type not in [
             "img_bbox",
             "img_semantic_segmentation",
+            "img_instance_segmentation",
             "img_polygon",
             "img_keypoints",
         ]:
@@ -260,6 +261,29 @@ class DatasetUploadHandler(COCO):
         )
 
     def get_img_semantic_segmentation_payload(self, anns):
+        predicted_classes = set()
+        annotations = []
+        for ann in anns:
+            annotations.append(
+                {
+                    "segmentation": ann["segmentation"],
+                    "category_id": self.original_category_referecences.get(
+                        ann["category_id"]
+                    ),
+                }
+            )
+            predicted_classes.add(
+                self.original_category_referecences.get(ann["category_id"])
+            )
+        return json.dumps(
+            {
+                "annotations": annotations,
+                "predicted_classes": list(predicted_classes),
+                "classes": self.classes,
+            }
+        )
+
+    def get_img_instance_segmentation_payload(self, anns):
         predicted_classes = set()
         annotations = []
         for ann in anns:

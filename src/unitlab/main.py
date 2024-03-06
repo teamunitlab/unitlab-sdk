@@ -34,6 +34,7 @@ class AnnotationType(str, Enum):
     IMG_BBOX = "img_bbox"
     IMG_POLYGON = "img_polygon"
     IMG_SEMANTIC_SEGMENTATION = "img_semantic_segmentation"
+    IMG_INSTANCE_SEGMENTATION = "img_instance_segmentation"
     IMG_SKELETON = "img_skeleton"
 
 
@@ -86,12 +87,7 @@ def dataset_list(api_key: API_KEY):
 def dataset_upload(
     api_key: API_KEY,
     name: Annotated[str, typer.Option(help="Name of the dataset")],
-    annotation_type: Annotated[
-        AnnotationType,
-        typer.Option(
-            help="Annotation type (img_bbox, img_polygon, img_semantic_segmentation, img_skeleton)"
-        ),
-    ],
+    annotation_type: Annotated[AnnotationType, typer.Option(help="Annotation format")],
     annotation_path: Annotated[Path, typer.Option(help="Path to the COCO json file")],
     data_path: Annotated[
         Path, typer.Option(help="Directory containing the data to be uploaded")
