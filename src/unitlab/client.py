@@ -93,7 +93,7 @@ class UnitlabClient:
         self.close()
 
     def _get_headers(self):
-        return {"Authorization": f"Api-Key {self.api_key}"} if self.api_key else None
+        return {"Authorization": f"Api-Key {self.api_key}"}
 
     @utils.handle_exceptions
     def _get(self, endpoint):
@@ -102,10 +102,10 @@ class UnitlabClient:
         )
 
     @utils.handle_exceptions
-    def _post(self, endpoint, data):
+    def _post(self, endpoint, data=None):
         return self.api_session.post(
             urllib.parse.urljoin(self.api_url, endpoint),
-            json=data,
+            json=data or {},
             headers=self._get_headers(),
         )
 
@@ -259,6 +259,9 @@ class UnitlabClient:
         )
         return response["pk"]
 
+    def finalize_dataset(self, dataset_id):
+        return self._post(f"/api/sdk/datasets/{dataset_id}/finalize/")
+
     def dataset_upload(
         self,
         name,
@@ -302,4 +305,4 @@ class UnitlabClient:
                         raise e
 
         asyncio.run(main())
-        self.dataset_download(dataset_id, "COCO")
+        self.finalize_dataset(dataset_id)
