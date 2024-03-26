@@ -32,9 +32,11 @@ class DownloadType(str, Enum):
 
 class AnnotationType(str, Enum):
     IMG_BBOX = "img_bbox"
-    IMG_POLYGON = "img_polygon"
     IMG_SEMANTIC_SEGMENTATION = "img_semantic_segmentation"
     IMG_INSTANCE_SEGMENTATION = "img_instance_segmentation"
+    IMG_POLYGON = "img_polygon"
+    IMG_LINE = "img_line"
+    IMG_POINT = "img_point"
     IMG_SKELETON = "img_skeleton"
 
 
@@ -104,10 +106,7 @@ def dataset_upload(
         help_prompt = ", ".join(
             f"{idx}: {license['name']}" for idx, license in enumerate(licenses)
         )
-        chosen_license = typer.prompt(
-            f"Select license {help_prompt}",
-            type=LicenseEnum,
-        )
+        chosen_license = typer.prompt(f"Select license {help_prompt}", type=LicenseEnum)
     client.dataset_upload(
         name,
         annotation_type.value,

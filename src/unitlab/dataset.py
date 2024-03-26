@@ -39,18 +39,6 @@ class COCO:
                     self.data_path
                 )
             )
-        if self.annotation_type not in [
-            "img_bbox",
-            "img_semantic_segmentation",
-            "img_instance_segmentation",
-            "img_polygon",
-            "img_keypoints",
-        ]:
-            raise ValueError(
-                "Invalid annotation type '{}'. Supported types are: ['img_bbox', 'img_semantic_segmentation', 'img_polygon', 'img_keypoints']".format(
-                    self.annotation_type
-                )
-            )
         for required_key in ["images", "annotations", "categories"]:
             if required_key not in self.dataset.keys():
                 raise KeyError(
@@ -284,30 +272,16 @@ class DatasetUploadHandler(COCO):
         )
 
     def get_img_instance_segmentation_payload(self, anns):
-        predicted_classes = set()
-        annotations = []
-        for ann in anns:
-            annotations.append(
-                {
-                    "segmentation": ann["segmentation"],
-                    "category_id": self.original_category_referecences.get(
-                        ann["category_id"]
-                    ),
-                }
-            )
-            predicted_classes.add(
-                self.original_category_referecences.get(ann["category_id"])
-            )
-        return json.dumps(
-            {
-                "annotations": annotations,
-                "predicted_classes": list(predicted_classes),
-                "classes": self.classes,
-            }
-        )
+        return self.get_img_semantic_segmentation_payload(anns)
 
     def get_img_polygon_payload(self, anns):
-        logger.warning("Not implemented yet")
+        return self.get_img_semantic_segmentation_payload(anns)
+
+    def get_img_line_payload(self, anns):
+        return self.get_img_semantic_segmentation_payload(anns)
+
+    def get_img_point_payload(self, anns):
+        return self.get_img_semantic_segmentation_payload(anns)
 
     def get_img_skeleton_payload(self, anns):
         logger.warning("Not implemented yet")
