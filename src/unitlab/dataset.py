@@ -1,4 +1,5 @@
 import asyncio
+import copy
 import itertools
 import json
 import logging
@@ -79,7 +80,9 @@ class COCO:
         self.catToImgs = catToImgs
         self.imgs = imgs
         self.cats = cats
-        self.categories = sorted(self.loadCats(self.getCatIds()), key=lambda x: x["id"])
+        self.categories = sorted(
+            copy.deepcopy(self.loadCats(self.getCatIds())), key=lambda x: x["id"]
+        )
         self.classes = [cat["name"] for cat in self.categories]
         self.original_category_referecences = dict()
         for i, category in enumerate(self.categories):
@@ -321,6 +324,9 @@ class DatasetUploadHandler(COCO):
                             raise SubscriptionError(
                                 "You have reached the maximum number of datasources for your subscription."
                             )
+                        elif response.status == 400:
+                            logger.error(await response.text())
+                            return 0
                         response.raise_for_status()
                         return 1
                 except SubscriptionError as e:

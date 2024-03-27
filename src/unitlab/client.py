@@ -244,38 +244,13 @@ class UnitlabClient:
 
         asyncio.run(main())
 
-    def create_dataset(self, name, annotation_type, categories, license_id=None):
-        response = self._post(
-            "/api/sdk/datasets/create/",
-            data={
-                "name": name,
-                "annotation_type": annotation_type,
-                "classes": [
-                    {"name": category["name"], "value": category["id"]}
-                    for category in categories
-                ],
-                "license": license_id,
-            },
-        )
-        return response["pk"]
-
-    def finalize_dataset(self, dataset_id):
+    def _finalize_dataset(self, dataset_id):
         return self._post(f"/api/sdk/datasets/{dataset_id}/finalize/")
 
-    def dataset_upload(
-        self,
-        name,
-        annotation_type,
-        annotation_path,
-        data_path,
-        license_id=None,
-        batch_size=15,
+    def _dataset_data_upload(
+        self, dataset_id, upload_handler: DatasetUploadHandler, batch_size=15
     ):
-        handler = DatasetUploadHandler(annotation_type, annotation_path, data_path)
-        dataset_id = self.create_dataset(
-            name, annotation_type, handler.categories, license_id=license_id
-        )
-        image_ids = handler.getImgIds()
+        image_ids = upload_handler.getImgIds()
         url = urllib.parse.urljoin(
             self.api_url, f"/api/sdk/datasets/{dataset_id}/upload/"
         )
@@ -294,7 +269,7 @@ class UnitlabClient:
                                 )
                             ]:
                                 tasks.append(
-                                    handler.upload_image(session, url, image_id)
+                                    upload_handler.upload_image(session, url, image_id)
                                 )
                             for f in asyncio.as_completed(tasks):
                                 try:
@@ -305,4 +280,55 @@ class UnitlabClient:
                         raise e
 
         asyncio.run(main())
-        self.finalize_dataset(dataset_id)
+
+    def dataset_upload(
+        self,
+        name,
+        annotation_type,
+        annotation_path,
+        data_path,
+        license_id=None,
+        batch_size=15,
+    ):
+        upload_handler = DatasetUploadHandler(
+            annotation_type, annotation_path, data_path
+        )
+        dataset_id = self._post(
+            "/api/sdk/datasets/create/",
+            data={
+                "name": name,
+                "annotation_type": annotation_type,
+                "classes": [
+                    {"name": category["name"], "value": category["id"]}
+                    for category in upload_handler.categories
+                ],
+                "license": license_id,
+            },
+        )["pk"]
+        self._dataset_data_upload(dataset_id, upload_handler, batch_size=batch_size)
+        self._finalize_dataset(dataset_id)
+
+    def dataset_update(self, pk, annotation_path, data_path, batch_size=15):
+        dataset = self._get(f"api/sdk/datasets/{pk}/")
+        upload_handler = DatasetUploadHandler(
+            dataset["annotation_type"], annotation_path, data_path
+        )
+        new_dataset = self._post(
+            f"/api/sdk/datasets/{pk}/update/",
+            data={
+                "classes": [
+                    {"name": category["name"], "value": category["id"]}
+                    for category in sorted(
+                        upload_handler.loadCats(upload_handler.getCatIds()),
+                        key=lambda x: x["id"],
+                    )
+                ]
+            },
+        )
+        upload_handler.original_category_referecences = {
+            int(k): v for k, v in new_dataset["original_category_referecences"].items()
+        }
+        self._dataset_data_upload(
+            new_dataset["pk"], upload_handler, batch_size=batch_size
+        )
+        self._finalize_dataset(new_dataset["pk"])

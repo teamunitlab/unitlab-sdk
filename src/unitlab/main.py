@@ -116,6 +116,18 @@ def dataset_upload(
     )
 
 
+@dataset_app.command(name="update", help="Update dataset")
+def dataset_update(
+    pk: UUID,
+    api_key: API_KEY,
+    annotation_path: Annotated[Path, typer.Option(help="Path to the COCO json file")],
+    data_path: Annotated[
+        Path, typer.Option(help="Directory containing the data to be uploaded")
+    ],
+):
+    get_client(api_key).dataset_update(pk, annotation_path, data_path)
+
+
 @dataset_app.command(name="download", help="Download dataset")
 def dataset_download(
     pk: UUID,
