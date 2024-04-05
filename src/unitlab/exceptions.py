@@ -10,7 +10,6 @@ class UnitlabError(Exception):
             message: An informative message about the exception.
             detail: The detail of the exception raised by Python or another library. Defaults to :obj:`None`.
         """
-
         super().__init__(message, detail)
         self.message = message
         self.detail = detail

@@ -37,7 +37,6 @@ class AnnotationType(str, Enum):
     IMG_POLYGON = "img_polygon"
     IMG_LINE = "img_line"
     IMG_POINT = "img_point"
-    IMG_SKELETON = "img_skeleton"
 
 
 @app.command()

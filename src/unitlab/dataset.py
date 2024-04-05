@@ -286,9 +286,6 @@ class DatasetUploadHandler(COCO):
     def get_img_point_payload(self, anns):
         return self.get_img_semantic_segmentation_payload(anns)
 
-    def get_img_skeleton_payload(self, anns):
-        logger.warning("Not implemented yet")
-
     def get_payload(self, img_id):
         image = self.imgs[img_id]
         ann_ids = self.getAnnIds(imgIds=img_id)

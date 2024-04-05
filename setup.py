@@ -2,7 +2,7 @@ from setuptools import find_packages, setup
 
 setup(
     name="unitlab",
-    version="2.1.4",
+    version="2.1.5",
     license="MIT",
     author="Unitlab Inc.",
     author_email="team@unitlab.ai",
@@ -14,7 +14,6 @@ setup(
         "Intended Audience :: Developers",
         "License :: OSI Approved :: MIT License",
         "Programming Language :: Python :: 3",
-        "Programming Language :: Python :: 3.7",
         "Programming Language :: Python :: 3.8",
         "Programming Language :: Python :: 3.9",
         "Programming Language :: Python :: 3.10",
