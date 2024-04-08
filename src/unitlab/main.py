@@ -39,7 +39,7 @@ class AnnotationType(str, Enum):
     IMG_POINT = "img_point"
 
 
-@app.command()
+@app.command(help="Configure the credentials")
 def configure(
     api_key: Annotated[str, typer.Option(help="The api-key obtained from unitlab.ai")],
     api_url: Annotated[str, typer.Option()] = "https://api.unitlab.ai",
@@ -76,7 +76,7 @@ def upload(
         Path, typer.Option(help="Directory containing the data to be uploaded")
     ],
 ):
-    get_client(api_key).upload_data(str(pk), directory=directory)
+    get_client(api_key).project_upload_data(str(pk), directory=directory)
 
 
 @dataset_app.command(name="list", help="List datasets")
@@ -145,7 +145,7 @@ def dataset_download(
                 "Export type is required when download type is annotation"
             )
         get_client(api_key).dataset_download(pk, export_type)
-    get_client(api_key).download_dataset_files(pk)
+    get_client(api_key).dataset_download_files(pk)
 
 
 if __name__ == "__main__":

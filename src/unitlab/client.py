@@ -118,7 +118,7 @@ class UnitlabClient:
     def project_members(self, project_id, pretty=0):
         return self._get(f"/api/sdk/projects/{project_id}/members/?pretty={pretty}")
 
-    def upload_data(self, project_id, directory, batch_size=100):
+    def project_upload_data(self, project_id, directory, batch_size=100):
         if not os.path.isdir(directory):
             raise ValueError(f"Directory {directory} does not exist")
 
@@ -204,7 +204,7 @@ class UnitlabClient:
             logger.info(f"File: {os.path.abspath(filename)}")
             return os.path.abspath(filename)
 
-    def download_dataset_files(self, dataset_id):
+    def dataset_download_files(self, dataset_id):
         response = self._post(
             f"/api/sdk/datasets/{dataset_id}/", data={"download_type": "files"}
         )
