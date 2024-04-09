@@ -144,7 +144,7 @@ def dataset_download(
             raise typer.BadParameter(
                 "Export type is required when download type is annotation"
             )
-        get_client(api_key).dataset_download(pk, export_type)
+        return get_client(api_key).dataset_download(pk, export_type)
     get_client(api_key).dataset_download_files(pk)
 
 
