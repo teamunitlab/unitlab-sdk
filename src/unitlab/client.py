@@ -19,7 +19,7 @@ class UnitlabClient:
     """A client with a connection to the Unitlab.ai platform.
 
     Note:
-        Please refer to the `Python SDK quickstart <https://docs.unitlab.ai/tutorials/python-sdk-quickstart>`__ for a full example of working with the Python SDK.
+        Please refer to the `Python SDK quickstart <https://docs.unitlab.ai/cli-python-sdk/unitlab-python-sdk>`__ for a full example of working with the Python SDK.
 
     First install the SDK.
 
