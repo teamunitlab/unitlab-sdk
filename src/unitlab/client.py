@@ -9,8 +9,9 @@ import aiohttp
 import requests
 import tqdm
 
-from . import exceptions, utils
+from . import exceptions
 from .dataset import DatasetUploadHandler
+from .utils import handle_exceptions
 
 logger = logging.getLogger(__name__)
 
@@ -48,12 +49,7 @@ class UnitlabClient:
         :exc:`~unitlab.exceptions.AuthenticationError`: If an invalid API key is used or (when not passing the API key directly) if ``UNITLAB_API_KEY`` is not found in your environment.
     """
 
-    def __init__(self, api_key: str = None, api_url: str = None):
-        if api_key is None:
-            api_key = utils.get_api_key()
-        if api_url is None:
-            api_url = utils.get_api_url()
-
+    def __init__(self, api_key, api_url: str = "https://api.unitlab.ai"):
         self.api_key = api_key
         self.api_url = api_url
         self.api_session = requests.Session()
@@ -95,13 +91,13 @@ class UnitlabClient:
     def _get_headers(self):
         return {"Authorization": f"Api-Key {self.api_key}"}
 
-    @utils.handle_exceptions
+    @handle_exceptions
     def _get(self, endpoint):
         return self.api_session.get(
             urllib.parse.urljoin(self.api_url, endpoint), headers=self._get_headers()
         )
 
-    @utils.handle_exceptions
+    @handle_exceptions
     def _post(self, endpoint, data=None):
         return self.api_session.post(
             urllib.parse.urljoin(self.api_url, endpoint),

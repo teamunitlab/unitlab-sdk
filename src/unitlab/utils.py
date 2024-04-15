@@ -53,7 +53,7 @@ def get_api_key() -> str:
         return config.get("default", "api_key")
     except Exception:
         raise exceptions.ConfigurationError(
-            f"Key `api_key` not found in {CONFIG_FILE_PATH}. Please run `unitlab configure` or provide one"
+            f"Key `api_key` not found in {CONFIG_FILE_PATH}. Please run `unitlab configure` or provide the api-key using the --api-key option."
         )
 
 

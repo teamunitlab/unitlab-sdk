@@ -6,8 +6,8 @@ import typer
 import validators
 from typing_extensions import Annotated
 
+from . import utils
 from .client import UnitlabClient
-from .utils import get_api_key, write_config
 
 app = typer.Typer()
 project_app = typer.Typer()
@@ -20,7 +20,7 @@ app.add_typer(dataset_app, name="dataset", help="Dataset commands")
 API_KEY = Annotated[
     str,
     typer.Option(
-        default_factory=get_api_key, help="The api-key obtained from unitlab.ai"
+        default_factory=utils.get_api_key, help="The api-key obtained from unitlab.ai"
     ),
 ]
 
@@ -46,7 +46,7 @@ def configure(
 ):
     if not validators.url(api_url, simple_host=True):
         raise typer.BadParameter("Invalid api url")
-    write_config(api_key=api_key, api_url=api_url)
+    utils.write_config(api_key=api_key, api_url=api_url)
 
 
 def get_client(api_key: str) -> UnitlabClient:
