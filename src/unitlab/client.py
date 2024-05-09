@@ -11,7 +11,7 @@ import tqdm
 
 from . import exceptions
 from .dataset import DatasetUploadHandler
-from .utils import handle_exceptions
+from .utils import get_api_url, handle_exceptions
 
 logger = logging.getLogger(__name__)
 
@@ -49,9 +49,9 @@ class UnitlabClient:
         :exc:`~unitlab.exceptions.AuthenticationError`: If an invalid API key is used or (when not passing the API key directly) if ``UNITLAB_API_KEY`` is not found in your environment.
     """
 
-    def __init__(self, api_key, api_url: str = "https://api.unitlab.ai"):
+    def __init__(self, api_key, api_url=None):
         self.api_key = api_key
-        self.api_url = api_url
+        self.api_url = api_url or get_api_url()
         self.api_session = requests.Session()
         adapter = requests.adapters.HTTPAdapter(max_retries=3)
         self.api_session.mount("http://", adapter)
