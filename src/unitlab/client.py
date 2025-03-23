@@ -9,8 +9,6 @@ import aiohttp
 import requests
 import tqdm
 
-from . import exceptions
-from .dataset import DatasetUploadHandler
 from .utils import get_api_url, handle_exceptions
 
 logger = logging.getLogger(__name__)
@@ -182,9 +180,6 @@ class UnitlabClient:
     def datasets(self, pretty=0):
         return self._get(f"/api/sdk/datasets/?pretty={pretty}")
 
-    def licenses(self):
-        return self._get("/api/sdk/licenses/")
-
     def dataset_download(self, dataset_id, export_type):
         response = self._post(
             f"/api/sdk/datasets/{dataset_id}/",
@@ -239,92 +234,3 @@ class UnitlabClient:
                         pbar.update(await f)
 
         asyncio.run(main())
-
-    def _finalize_dataset(self, dataset_id):
-        return self._post(f"/api/sdk/datasets/{dataset_id}/finalize/")
-
-    def _dataset_data_upload(
-        self, dataset_id, upload_handler: DatasetUploadHandler, batch_size=15
-    ):
-        image_ids = upload_handler.getImgIds()
-        url = urllib.parse.urljoin(
-            self.api_url, f"/api/sdk/datasets/{dataset_id}/upload/"
-        )
-
-        async def main():
-            with tqdm.tqdm(total=len(image_ids), ncols=80) as pbar:
-                async with aiohttp.ClientSession(
-                    headers=self._get_headers()
-                ) as session:
-                    try:
-                        for i in range((len(image_ids) + batch_size - 1) // batch_size):
-                            tasks = []
-                            for image_id in image_ids[
-                                i * batch_size : min(
-                                    (i + 1) * batch_size, len(image_ids)
-                                )
-                            ]:
-                                tasks.append(
-                                    upload_handler.upload_image(session, url, image_id)
-                                )
-                            for f in asyncio.as_completed(tasks):
-                                try:
-                                    pbar.update(await f)
-                                except exceptions.SubscriptionError as e:
-                                    raise e
-                    except exceptions.SubscriptionError as e:
-                        raise e
-
-        asyncio.run(main())
-
-    def dataset_upload(
-        self,
-        name,
-        annotation_type,
-        annotation_path,
-        data_path,
-        license_id=None,
-        batch_size=15,
-    ):
-        upload_handler = DatasetUploadHandler(
-            annotation_type, annotation_path, data_path
-        )
-        dataset_id = self._post(
-            "/api/sdk/datasets/create/",
-            data={
-                "name": name,
-                "annotation_type": annotation_type,
-                "classes": [
-                    {"name": category["name"], "value": category["id"]}
-                    for category in upload_handler.categories
-                ],
-                "license": license_id,
-            },
-        )["pk"]
-        self._dataset_data_upload(dataset_id, upload_handler, batch_size=batch_size)
-        self._finalize_dataset(dataset_id)
-
-    def dataset_update(self, pk, annotation_path, data_path, batch_size=15):
-        dataset = self._get(f"api/sdk/datasets/{pk}/")
-        upload_handler = DatasetUploadHandler(
-            dataset["annotation_type"], annotation_path, data_path
-        )
-        new_dataset = self._post(
-            f"/api/sdk/datasets/{pk}/update/",
-            data={
-                "classes": [
-                    {"name": category["name"], "value": category["id"]}
-                    for category in sorted(
-                        upload_handler.loadCats(upload_handler.getCatIds()),
-                        key=lambda x: x["id"],
-                    )
-                ]
-            },
-        )
-        upload_handler.original_category_referecences = {
-            int(k): v for k, v in new_dataset["original_category_referecences"].items()
-        }
-        self._dataset_data_upload(
-            new_dataset["pk"], upload_handler, batch_size=batch_size
-        )
-        self._finalize_dataset(new_dataset["pk"])

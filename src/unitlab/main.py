@@ -84,49 +84,6 @@ def dataset_list(api_key: API_KEY):
     print(get_client(api_key).datasets(pretty=1))
 
 
-@dataset_app.command(name="upload", help="Upload dataset")
-def dataset_upload(
-    api_key: API_KEY,
-    name: Annotated[str, typer.Option(help="Name of the dataset")],
-    annotation_type: Annotated[AnnotationType, typer.Option(help="Annotation format")],
-    annotation_path: Annotated[Path, typer.Option(help="Path to the COCO json file")],
-    data_path: Annotated[
-        Path, typer.Option(help="Directory containing the data to be uploaded")
-    ],
-):
-    client = get_client(api_key)
-    licenses = client.licenses()
-    chosen_license = None
-    if licenses:
-        LicenseEnum = Enum(
-            "LicenseEnum",
-            {license["pk"]: str(idx) for idx, license in enumerate(licenses)},
-        )
-        help_prompt = ", ".join(
-            f"{idx}: {license['name']}" for idx, license in enumerate(licenses)
-        )
-        chosen_license = typer.prompt(f"Select license {help_prompt}", type=LicenseEnum)
-    client.dataset_upload(
-        name,
-        annotation_type.value,
-        annotation_path,
-        data_path,
-        license_id=chosen_license.name if chosen_license else None,
-    )
-
-
-@dataset_app.command(name="update", help="Update dataset")
-def dataset_update(
-    pk: UUID,
-    api_key: API_KEY,
-    annotation_path: Annotated[Path, typer.Option(help="Path to the COCO json file")],
-    data_path: Annotated[
-        Path, typer.Option(help="Directory containing the data to be uploaded")
-    ],
-):
-    get_client(api_key).dataset_update(pk, annotation_path, data_path)
-
-
 @dataset_app.command(name="download", help="Download dataset")
 def dataset_download(
     pk: UUID,
