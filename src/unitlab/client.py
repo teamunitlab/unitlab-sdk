@@ -3,16 +3,30 @@ import glob
 import logging
 import os
 import urllib.parse
-
 import aiofiles
 import aiohttp
 import requests
 import tqdm
-
+import socket
+import subprocess
+import signal
+import re
+import time
+import threading
+import psutil
+from datetime import datetime, timezone
+from .tunnel_config import CloudflareTunnel
 from .utils import get_api_url, handle_exceptions
 
-logger = logging.getLogger(__name__)
 
+try:
+    import GPUtil
+    HAS_GPU = True
+except ImportError:
+    HAS_GPU = False
+
+
+logger = logging.getLogger(__name__)
 
 class UnitlabClient:
     """A client with a connection to the Unitlab.ai platform.
@@ -54,6 +68,20 @@ class UnitlabClient:
         adapter = requests.adapters.HTTPAdapter(max_retries=3)
         self.api_session.mount("http://", adapter)
         self.api_session.mount("https://", adapter)
+        
+        # Device agent attributes (initialized when needed)
+        self.device_id = None
+        self.base_domain = None
+        self.server_url = None
+        self.hostname = socket.gethostname()
+        self.tunnel_manager = None
+        self.jupyter_url = None
+        self.ssh_url = None
+        self.jupyter_proc = None
+        self.tunnel_proc = None
+        self.jupyter_port = None
+        self.running = True
+        self.metrics_thread = None
 
     def close(self) -> None:
         """Close :class:`UnitlabClient` connections.
@@ -234,3 +262,372 @@ class UnitlabClient:
                         pbar.update(await f)
 
         asyncio.run(main())
+    
+    def initialize_device_agent(self, server_url: str, device_id: str, base_domain: str):
+        """Initialize device agent configuration"""
+        self.server_url = server_url.rstrip('/')
+        self.device_id = device_id
+        self.base_domain = base_domain
+        
+        # Initialize tunnel manager if available
+        if CloudflareTunnel:
+            self.tunnel_manager = CloudflareTunnel(base_domain, device_id)
+            self.jupyter_url = self.tunnel_manager.jupyter_url
+            self.ssh_url = self.tunnel_manager.ssh_url
+        else:
+            self.tunnel_manager = None
+            self.jupyter_url = f"https://jupyter-{device_id}.{base_domain}"
+            self.ssh_url = f"https://ssh-{device_id}.{base_domain}"
+        
+        # Setup signal handlers
+        signal.signal(signal.SIGINT, self._handle_shutdown)
+        signal.signal(signal.SIGTERM, self._handle_shutdown)
+    
+    def _handle_shutdown(self, signum, frame):
+        """Handle shutdown signals"""
+        _ = frame  # Unused but required by signal handler signature
+        logger.info(f"Received signal {signum}, shutting down...")
+        self.running = False
+    
+    def _get_device_headers(self):
+        """Get headers for device agent API requests"""
+        headers = {
+            'Content-Type': 'application/json',
+            'User-Agent': f'UnitlabDeviceAgent/{self.device_id}'
+        }
+        
+        # Add API key if provided
+        if self.api_key:
+            headers['Authorization'] = f'Api-Key {self.api_key}'
+        
+        return headers
+    
+    def _post_device(self, endpoint, data=None):
+        """Make authenticated POST request for device agent"""
+        full_url = urllib.parse.urljoin(self.server_url, endpoint)
+        logger.debug(f"Posting to {full_url} with data: {data}")
+        
+        try:
+            response = self.api_session.post(
+                full_url,
+                json=data or {},
+                headers=self._get_device_headers(),
+            )
+            logger.debug(f"Response status: {response.status_code}, Response: {response.text}")
+            response.raise_for_status()
+            return response
+        except Exception as e:
+            logger.error(f"POST request failed to {full_url}: {e}")
+            raise
+    
+    def start_jupyter(self) -> bool:
+        """Start Jupyter notebook server"""
+        try:
+            logger.info("Starting Jupyter notebook...")
+            
+            cmd = [
+                "jupyter", "notebook",
+                "--no-browser",
+                "--ServerApp.token=''",
+                "--ServerApp.password=''",
+                "--ServerApp.allow_origin='*'",
+                "--ServerApp.ip='0.0.0.0'"
+            ]
+            
+            self.jupyter_proc = subprocess.Popen(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True
+            )
+            
+            # Wait for Jupyter to start and get the port
+            start_time = time.time()
+            while time.time() - start_time < 30:
+                line = self.jupyter_proc.stdout.readline()
+                if not line:
+                    break
+                
+                # Look for the port in the output
+                match = re.search(r'http://.*:(\d+)/', line)
+                if match:
+                    self.jupyter_port = match.group(1)
+                    logger.info(f"✅ Jupyter started on port {self.jupyter_port}")
+                    return True
+            
+            raise Exception("Timeout waiting for Jupyter to start")
+            
+        except Exception as e:
+            logger.error(f"Failed to start Jupyter: {e}")
+            if self.jupyter_proc:
+                self.jupyter_proc.terminate()
+                self.jupyter_proc = None
+            return False
+    
+    def setup_tunnels(self) -> bool:
+        """Setup Cloudflare tunnels"""
+        try:
+            if not self.jupyter_port:
+                logger.error("Jupyter port not available")
+                return False
+            
+            if not self.tunnel_manager:
+                logger.warning("CloudflareTunnel not available, skipping tunnel setup")
+                return True
+            
+            logger.info("Setting up Cloudflare tunnels...")
+            self.tunnel_proc = self.tunnel_manager.setup(self.jupyter_port)
+            
+            if self.tunnel_proc:
+                logger.info("✅ Tunnels established")
+                self.report_services()
+                return True
+            
+            return False
+            
+        except Exception as e:
+            logger.error(f"Tunnel setup failed: {e}")
+            return False
+    
+    def check_ssh(self) -> bool:
+        """Check if SSH service is available"""
+        try:
+            # Check if SSH is running
+            result = subprocess.run(
+                ["systemctl", "is-active", "ssh"],
+                capture_output=True,
+                text=True,
+                timeout=5
+            )
+            
+            if result.stdout.strip() == "active":
+                logger.info("✅ SSH service is active")
+                return True
+            else:
+                logger.warning("SSH service is not active")
+                # Try to start SSH
+                subprocess.run(["sudo", "systemctl", "start", "ssh"], timeout=10)
+                time.sleep(2)
+                return False
+                
+        except Exception as e:
+            logger.error(f"SSH check failed: {e}")
+            return False
+    
+    def report_services(self):
+        """Report services to the server"""
+        try:
+            # Report Jupyter service
+            jupyter_data = {
+                'service_type': 'jupyter',
+                'service_name': f'jupyter-{self.device_id}',
+                'local_port': int(self.jupyter_port) if self.jupyter_port else 8888,
+                'tunnel_url': self.jupyter_url,
+                'status': 'online'
+            }
+            
+            logger.info(f"Reporting Jupyter service with URL: {self.jupyter_url}")
+            jupyter_response = self._post_device(
+                f"/api/tunnel/agent/jupyter/{self.device_id}/", 
+                jupyter_data
+            )
+            logger.info(f"Reported Jupyter service: {jupyter_response.status_code if hasattr(jupyter_response, 'status_code') else jupyter_response}")
+            
+            # Report SSH service (always report, even if SSH is not running locally)
+            # Remove https:// prefix for SSH hostname
+            ssh_hostname = self.ssh_url.replace('https://', '')
+            
+            # Get current system username
+            import getpass
+            current_user = getpass.getuser()
+            
+            # Create SSH connection command
+            ssh_connection_cmd = f"ssh -o ProxyCommand='cloudflared access ssh --hostname {ssh_hostname}' {current_user}@{ssh_hostname}"
+            
+            # Check if SSH is available
+            ssh_available = self.check_ssh()
+            
+            ssh_data = {
+                'service_type': 'ssh',
+                'service_name': f'ssh-{self.device_id}',
+                'local_port': 22,
+                'tunnel_url': ssh_connection_cmd,  # Send the SSH command instead of URL
+                'status': 'online' if ssh_available else 'offline'
+            }
+            
+            logger.info(f"Reporting SSH service with command: {ssh_connection_cmd}")
+            ssh_response = self._post_device(
+                f"/api/tunnel/agent/ssh/{self.device_id}/",
+                ssh_data
+            )
+            logger.info(f"Reported SSH service: {ssh_response.status_code if hasattr(ssh_response, 'status_code') else ssh_response}")
+            
+        except Exception as e:
+            logger.error(f"Failed to report services: {e}", exc_info=True)
+    
+    def collect_metrics(self) -> dict:
+        """Collect system metrics"""
+        metrics = {}
+        
+        # CPU metrics
+        metrics['cpu'] = {
+            'percent': psutil.cpu_percent(interval=1),
+            'count': psutil.cpu_count(),
+            'timestamp': datetime.now(timezone.utc).isoformat()
+        }
+        
+        # Memory metrics
+        mem = psutil.virtual_memory()
+        metrics['ram'] = {
+            'total': mem.total,
+            'used': mem.used,
+            'available': mem.available,
+            'percent': mem.percent,
+            'timestamp': datetime.now(timezone.utc).isoformat()
+        }
+        
+        # GPU metrics (if available)
+        if HAS_GPU:
+            try:
+                gpus = GPUtil.getGPUs()
+                if gpus:
+                    gpu = gpus[0]
+                    metrics['gpu'] = {
+                        'name': gpu.name,
+                        'load': gpu.load * 100,
+                        'memory_used': gpu.memoryUsed,
+                        'memory_total': gpu.memoryTotal,
+                        'temperature': gpu.temperature,
+                        'timestamp': datetime.now(timezone.utc).isoformat()
+                    }
+            except Exception as e:
+                logger.debug(f"GPU metrics unavailable: {e}")
+        
+        return metrics
+    
+    def send_metrics(self):
+        """Send metrics to server"""
+        try:
+            metrics = self.collect_metrics()
+            
+            # Send CPU metrics
+            if 'cpu' in metrics:
+                self._post_device(f"/api/tunnel/agent/cpu/{self.device_id}/", metrics['cpu'])
+            
+            # Send RAM metrics  
+            if 'ram' in metrics:
+                self._post_device(f"/api/tunnel/agent/ram/{self.device_id}/", metrics['ram'])
+            
+            # Send GPU metrics if available
+            if 'gpu' in metrics and metrics['gpu']:
+                self._post_device(f"/api/tunnel/agent/gpu/{self.device_id}/", metrics['gpu'])
+            
+            logger.debug(f"Metrics sent - CPU: {metrics['cpu']['percent']:.1f}%, RAM: {metrics['ram']['percent']:.1f}%")
+            
+        except Exception as e:
+            logger.error(f"Failed to send metrics: {e}")
+    
+    def metrics_loop(self):
+        """Background thread for sending metrics"""
+        logger.info("Starting metrics thread")
+        
+        while self.running:
+            try:
+                self.send_metrics()
+                
+                # Check if processes are still running
+                if self.jupyter_proc and self.jupyter_proc.poll() is not None:
+                    logger.warning("Jupyter process died")
+                    self.jupyter_proc = None
+                
+                if self.tunnel_proc and self.tunnel_proc.poll() is not None:
+                    logger.warning("Tunnel process died")
+                    self.tunnel_proc = None
+                
+            except Exception as e:
+                logger.error(f"Metrics loop error: {e}")
+            
+            # Wait for next interval (default 5 seconds)
+            for _ in range(3):
+                if not self.running:
+                    break
+                time.sleep(1)
+        
+        logger.info("Metrics thread stopped")
+    
+    def run_device_agent(self):
+        """Main run method for device agent"""
+        logger.info("=" * 50)
+        logger.info("Starting Device Agent")
+        logger.info(f"Device ID: {self.device_id}")
+        logger.info(f"Server: {self.server_url}")
+        logger.info(f"Domain: {self.base_domain}")
+        logger.info("=" * 50)
+        
+        # Check SSH
+        self.check_ssh()
+        
+        # Start Jupyter
+        if not self.start_jupyter():
+            logger.error("Failed to start Jupyter")
+            return
+        
+        # Wait a moment for Jupyter to fully initialize
+        time.sleep(1)
+        
+        # Setup tunnels
+        if not self.setup_tunnels():
+            logger.error("Failed to setup tunnels")
+            self.cleanup_device_agent()
+            return
+        
+        # Print access information
+        logger.info("=" * 50)
+        logger.info("🎉 All services started successfully!")
+        logger.info(f"📔 Jupyter: {self.jupyter_url}")
+        logger.info(f"🔐 SSH: {self.ssh_url}")
+        # Remove https:// prefix for SSH command display
+        ssh_hostname = self.ssh_url.replace('https://', '')
+        import getpass
+        current_user = getpass.getuser()
+        logger.info(f"🔐 SSH Command: ssh -o ProxyCommand='cloudflared access ssh --hostname {ssh_hostname}' {current_user}@{ssh_hostname}")
+        logger.info("=" * 50)
+        
+        # Start metrics thread
+        self.metrics_thread = threading.Thread(target=self.metrics_loop, daemon=True)
+        self.metrics_thread.start()
+        
+        # Main loop
+        try:
+            while self.running:
+                time.sleep(1)
+        except KeyboardInterrupt:
+            logger.info("Interrupted by user")
+        
+        self.cleanup_device_agent()
+    
+    def cleanup_device_agent(self):
+        """Clean up device agent resources"""
+        logger.info("Cleaning up...")
+        
+        self.running = False
+        
+        # Stop Jupyter
+        if self.jupyter_proc:
+            logger.info("Stopping Jupyter...")
+            self.jupyter_proc.terminate()
+            try:
+                self.jupyter_proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                self.jupyter_proc.kill()
+        
+        # Stop tunnel
+        if self.tunnel_proc:
+            logger.info("Stopping tunnel...")
+            self.tunnel_proc.terminate()
+            try:
+                self.tunnel_proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                self.tunnel_proc.kill()
+        
+        logger.info("Cleanup complete")

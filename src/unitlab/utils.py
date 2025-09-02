@@ -1,6 +1,8 @@
 import logging
 from configparser import ConfigParser
 from pathlib import Path
+import logging
+import requests
 
 import requests
 
@@ -63,3 +65,4 @@ def get_api_url() -> str:
         return config.get("default", "api_url")
     except Exception:
         return "https://api.unitlab.ai"
+
