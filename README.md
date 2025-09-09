@@ -26,6 +26,35 @@ Once you have successfully installed the Unitlab package, you can conveniently h
 ## Quickstart 
 Follow [the quickstart guide for the Python SDK](https://docs.unitlab.ai/cli-python-sdk/unitlab-python-sdk).
 
+## CLI Commands
+
+### Agent Commands
+
+The agent module provides commands for running device agents with Jupyter, SSH tunnels, and metrics reporting.
+
+#### Run Agent
+
+Run a full device agent that sets up Jupyter notebooks, SSH tunnels, and system metrics reporting:
+
+```bash
+unitlab agent run --api-key YOUR_API_KEY [OPTIONS]
+```
+
+**Options:**
+- `--api-key` (required): Your Unitlab API key
+
+**Example:**
+```bash
+# Run with auto-generated device ID
+unitlab agent run  your-api-key-here
+
+
+
+The agent will:
+- Initialize Jupyter notebook server
+- Set up SSH tunnels for remote access
+- Collect and report system metrics
+- Handle graceful shutdown on interruption
 
 ## Documentation 
 [The documentation](https://docs.unitlab.ai/) provides comprehensive instructions on how to utilize the Unilab SDK effectively.

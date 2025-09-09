@@ -2,7 +2,7 @@ from setuptools import find_packages, setup
 
 setup(
     name="unitlab",
-    version="2.3.0",
+    version="2.3.34",
     license="MIT",
     author="Unitlab Inc.",
     author_email="team@unitlab.ai",
@@ -29,6 +29,13 @@ setup(
         "tqdm",
         "typer",
         "validators",
+        'psutil',
+        'pyyaml',
+        'jupyter',
+        'python-dotenv',
+        'uvicorn',
+        'fastapi',
+        
     ],
     entry_points={
         "console_scripts": ["unitlab=unitlab.main:app"],
