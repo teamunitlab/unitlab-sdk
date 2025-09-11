@@ -14,7 +14,7 @@ from fastapi import FastAPI
 import uvicorn
 import threading
 import psutil
-
+import secrets
 
 api = FastAPI()
 
@@ -32,14 +32,13 @@ class PersistentTunnel:
         # Cloudflare credentials (hardcoded for simplicity)
         
         self.cf_api_key = "RoIAn1t9rMqcGK7_Xja216pxbRTyFafC1jeRKIO3"  
-        
-        # Account and Zone IDs
+
         self.cf_account_id = "29df28cf48a30be3b1aa344b840400e6"  # Your account ID
         self.cf_zone_id = "eae80a730730b3b218a80dace996535a"  # Zone ID for unitlab-ai.com
         
         # Clean device ID for subdomain
         if device_id:
-            self.device_id = device_id.replace('-', '').replace('_', '').replace('.', '').lower()[:20]
+            self.device_id = device_id.replace('_', '').replace('.', '').lower()[:30]
         else:
             import uuid
             self.device_id = str(uuid.uuid4())[:8]
@@ -57,24 +56,7 @@ class PersistentTunnel:
         self.jupyter_process = None
         self.tunnel_process = None
     
-    def get_zone_id(self):
-        """Get Zone ID for unitlab-ai.com"""
-        print("🔍 Getting Zone ID for {}...".format(self.domain))
-        
-        url = "https://api.cloudflare.com/client/v4/zones"
-        headers = self._get_headers()
-        params = {"name": self.domain}
-        
-        response = requests.get(url, headers=headers, params=params)
-        if response.status_code == 200:
-            data = response.json()
-            if data["result"]:
-                self.cf_zone_id = data["result"][0]["id"]
-                print("✅ Zone ID: {}".format(self.cf_zone_id))
-                return self.cf_zone_id
-        
-        print("❌ Could not get Zone ID")
-        return None
+    
     
     def _get_headers(self):
         """Get API headers for Global API Key"""
@@ -85,41 +67,23 @@ class PersistentTunnel:
             "Content-Type": "application/json"                                                                                          
         } 
     
-    def get_or_create_tunnel(self):
-        """Get existing tunnel or create a new one"""
-        # First, check if tunnel already exists
-        print("🔍 Checking for existing tunnel: {}...".format(self.tunnel_name))
+    # def get_or_create_tunnel(self):
+    #     """Always create a new tunnel with unique name to avoid conflicts"""
+    #     # Generate unique tunnel name to avoid conflicts
+    #     import uuid
+    #     unique_suffix = str(uuid.uuid4())[:8]
+    #     self.tunnel_name = "agent-{}-{}".format(self.device_id, unique_suffix)
+    #     print("🔧 Creating tunnel: {}...".format(self.tunnel_name))
         
-        list_url = "https://api.cloudflare.com/client/v4/accounts/{}/cfd_tunnel".format(self.cf_account_id)
-        headers = self._get_headers()
-        
-        # Check if tunnel exists
-        response = requests.get(list_url, headers=headers)
-        if response.status_code == 200:
-            tunnels = response.json().get("result", [])
-            for tunnel in tunnels:
-                if tunnel["name"] == self.tunnel_name:
-                    print("✅ Found existing tunnel: {}".format(tunnel["id"]))
-                    self.tunnel_id = tunnel["id"]
-                    
-                    # Tunnel exists, create a new one with unique name
-                    print("⚠️  Tunnel with this name already exists")
-                    import uuid
-                    unique_suffix = str(uuid.uuid4())[:8]
-                    self.tunnel_name = "agent-{}-{}".format(self.device_id, unique_suffix)
-                    print("🔄 Creating new tunnel with unique name: {}".format(self.tunnel_name))
-                    # Don't break, let it continue to create new tunnel
-                    return self.create_new_tunnel()
-        
-        # Create new tunnel
-        return self.create_new_tunnel()
-    
+    #     # Always create new tunnel
+    #     return self.create_new_tunnel()
+
+
     def create_new_tunnel(self):
-        """Create a brand new tunnel"""
+        """Create a new tunnel via Cloudflare API"""
         print("🔧 Creating new tunnel: {}...".format(self.tunnel_name))
         
         # Generate random tunnel secret (32 bytes)
-        import secrets
         tunnel_secret = base64.b64encode(secrets.token_bytes(32)).decode()
         
         url = "https://api.cloudflare.com/client/v4/accounts/{}/cfd_tunnel".format(self.cf_account_id)
@@ -143,12 +107,13 @@ class PersistentTunnel:
                 "TunnelID": self.tunnel_id
             }
             
-            # Save credentials to file with tunnel name (not ID) for consistency
+            # Save credentials to file
             cred_file = "/tmp/tunnel-{}.json".format(self.tunnel_name)
             with open(cred_file, 'w') as f:
                 json.dump(self.tunnel_credentials, f)
             
             print("✅ Tunnel created: {}".format(self.tunnel_id))
+            print("✅ Credentials saved to: {}".format(cred_file))
             return cred_file
         else:
             print("❌ Failed to create tunnel: {}".format(response.text))
@@ -161,9 +126,7 @@ class PersistentTunnel:
         
         print("🔧 Creating DNS records...")
         
-        # Get zone ID if we don't have it
-        if self.cf_zone_id == "NEED_ZONE_ID_FOR_1SCAN_UZ":
-            self.get_zone_id()
+        # self.get_zone_id()
         
         url = "https://api.cloudflare.com/client/v4/zones/{}/dns_records".format(self.cf_zone_id)
         headers = self._get_headers()
@@ -187,7 +150,32 @@ class PersistentTunnel:
             print("❌ Failed to create main DNS: {}".format(response.text[:200]))
             return False
         
-        # Create SSH subdomain record (s{deviceid}.unitlab-ai.com)
+        # First, check if SSH DNS record exists and delete it
+        # print("🔍 Checking for existing SSH DNS record: {}.{}".format(self.ssh_subdomain, self.domain))
+        # list_url = "{}?name={}.{}".format(url, self.ssh_subdomain, self.domain)
+        # list_response = requests.get(list_url, headers=headers)
+        
+        # if list_response.status_code == 200:
+        #     records = list_response.json().get("result", [])
+        #     print("Found {} existing DNS records".format(len(records)))
+        #     print('this is new version')
+        #     for record in records:
+        #         if record["name"] == "{}.{}".format(self.ssh_subdomain, self.domain):
+        #             record_id = record["id"]
+        #             print("🗑️  Deleting old SSH DNS record: {}".format(record_id))
+        #             delete_url = "{}/{}".format(url, record_id)
+        #             delete_response = requests.delete(delete_url, headers=headers)
+        #             if delete_response.status_code in [200, 204]:
+        #                 print("✅ Deleted old SSH DNS record")
+        #             else:
+        #                 print("⚠️  Could not delete old SSH DNS record: {}".format(delete_response.text[:200]))
+        # else:
+        #     print("⚠️  Could not list DNS records: {}".format(list_response.text[:200]))
+        
+        # Wait a moment for DNS deletion to propagate
+        time.sleep(2)
+        
+        # Create new SSH subdomain record pointing to new tunnel
         ssh_data = {
             "type": "CNAME",
             "name": self.ssh_subdomain,
@@ -196,17 +184,76 @@ class PersistentTunnel:
             "ttl": 1
         }
         
+        print("📝 Creating SSH DNS record: {} -> {}".format(self.ssh_subdomain, self.tunnel_id))
         ssh_response = requests.post(url, headers=headers, json=ssh_data)
         
         if ssh_response.status_code in [200, 201]:
             print("✅ SSH DNS record created: {}.{}".format(self.ssh_subdomain, self.domain))
-        elif "already exists" in ssh_response.text:
-            print("⚠️  SSH DNS record already exists: {}.{}".format(self.ssh_subdomain, self.domain))
+            print("   Points to: {}.cfargotunnel.com".format(self.tunnel_id))
         else:
-            print("⚠️  Could not create SSH DNS: {}".format(ssh_response.text[:200]))
-            # SSH is optional, so we continue even if SSH DNS fails
+            print("❌ Failed to create SSH DNS: Status {} - {}".format(ssh_response.status_code, ssh_response.text))
+            # Try to parse error
+            try:
+                error_data = ssh_response.json()
+                if "errors" in error_data:
+                    for error in error_data["errors"]:
+                        print("   Error: {}".format(error.get("message", error)))
+            except:
+                pass
         
         return True
+    
+    def create_access_application(self):
+        """Create Cloudflare Access application for SSH with bypass policy"""
+        print("🔧 Creating Access application for SSH...")
+        
+        # Create Access application
+        app_url = "https://api.cloudflare.com/client/v4/zones/{}/access/apps".format(self.cf_zone_id)
+        headers = self._get_headers()
+        
+        app_data = {
+            "name": "SSH-{}".format(self.device_id),
+            "domain": "{}.{}".format(self.ssh_subdomain, self.domain),
+            "type": "ssh",
+            "session_duration": "24h",
+            "auto_redirect_to_identity": False
+        }
+        
+        app_response = requests.post(app_url, headers=headers, json=app_data)
+        
+        if app_response.status_code in [200, 201]:
+            app_id = app_response.json()["result"]["id"]
+            print("✅ Access application created: {}".format(app_id))
+            
+            # Create bypass policy (no authentication required)
+            policy_url = "https://api.cloudflare.com/client/v4/zones/{}/access/apps/{}/policies".format(
+                self.cf_zone_id, app_id
+            )
+            
+            policy_data = {
+                "name": "Public Access",
+                "decision": "bypass",
+                "include": [
+                    {"everyone": {}}
+                ],
+                "precedence": 1
+            }
+            
+            policy_response = requests.post(policy_url, headers=headers, json=policy_data)
+            
+            
+            if policy_response.status_code in [200, 201]:
+                print("✅ Bypass policy created - SSH is publicly accessible")
+                return True
+            else:
+                print("⚠️  Could not create bypass policy: {}".format(policy_response.text[:200]))
+                return False
+        elif "already exists" in app_response.text:
+            print("⚠️  Access application already exists")
+            return True
+        else:
+            print("⚠️  Could not create Access application: {}".format(app_response.text[:200]))
+            return False
     
     def create_tunnel_config(self, cred_file):
         """Create tunnel config file"""
@@ -216,14 +263,19 @@ class PersistentTunnel:
             f.write("credentials-file: {}\n\n".format(cred_file))
             f.write("ingress:\n")
 
-            # SSH service on dedicated subdomain (s{deviceid}.unitlab-ai.com)
+                  # SSH service on dedicated subdomain (s{deviceid}.unitlab-ai.com)
             f.write("  - hostname: {}.{}\n".format(self.ssh_subdomain, self.domain))
             f.write("    service: ssh://localhost:22\n")
+
+      
+
 
             # API (more specific path goes first)
             f.write("  - hostname: {}.{}\n".format(self.subdomain, self.domain))
             f.write("    path: /api-agent/*\n")
             f.write("    service: http://localhost:8001\n")
+
+      
 
             # Jupyter (general hostname for HTTP)
             f.write("  - hostname: {}.{}\n".format(self.subdomain, self.domain))
@@ -394,16 +446,19 @@ class PersistentTunnel:
             # API credentials are hardcoded, so we're ready to go
             
             # 1. Get existing or create new tunnel via API
-            cred_file = self.get_or_create_tunnel()
+            cred_file = self.create_new_tunnel()
         
             
             # 2. Create DNS record
             self.create_dns_record()
             
-            # 3. Create config
+            # 3. Create Access application for SSH
+            self.create_access_application()
+            
+            # 4. Create config
             config_file = self.create_tunnel_config(cred_file)
             
-            # 4. Start services
+            # 5. Start services
             self.start_jupyter()
             self.start_api()
             self.start_tunnel(config_file)
@@ -433,34 +488,7 @@ class PersistentTunnel:
             self.stop()
             return False
     
-    def start_quick_tunnel(self):
-        """Fallback to quick tunnel"""
-        print("🔧 Using quick tunnel (temporary URL)...")
-        
-        # Start Jupyter first
-        self.start_jupyter()
-        
-        # Start quick tunnel
-        cloudflared = self.get_cloudflared_path()
-        cmd = [cloudflared, "tunnel", "--url", "http://localhost:8888"]
-        
-        self.tunnel_process = subprocess.Popen(
-            cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True
-        )
-        
-        # Get URL from output
-        for _ in range(30):
-            line = self.tunnel_process.stdout.readline()
-            if "trycloudflare.com" in line:
-                import re
-                match = re.search(r'https://[a-zA-Z0-9-]+\.trycloudflare\.com', line)
-                if match:
-                    self.jupyter_url = match.group(0)
-                    print("✅ Quick tunnel: {}".format(self.jupyter_url))
-                    return True
-            time.sleep(0.5)
-        
-        return False
+
     
     def stop(self):
         """Stop everything"""
@@ -468,17 +496,23 @@ class PersistentTunnel:
             self.jupyter_process.terminate()
         if self.tunnel_process:
             self.tunnel_process.terminate()
-        
-        # Optionally delete tunnel when stopping
-        if self.tunnel_id:
             try:
-                url = "https://api.cloudflare.com/client/v4/accounts/{}/cfd_tunnel/{}".format(
-                    self.cf_account_id, self.tunnel_id
-                )
-                requests.delete(url, headers=self._get_headers())
-                print("🗑️  Tunnel deleted")
-            except Exception:
-                pass  # Ignore cleanup errors
+                self.tunnel_process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                self.tunnel_process.kill()
+                self.tunnel_process.wait()
+            print("✅ Tunnel stopped")
+        
+    #     # Optionally delete tunnel when stopping
+    #     if self.tunnel_id:
+    #         try:
+    #             url = "https://api.cloudflare.com/client/v4/accounts/{}/cfd_tunnel/{}".format(
+    #                 self.cf_account_id, self.tunnel_id
+    #             )
+    #             requests.delete(url, headers=self._get_headers())
+    #             print("🗑️  Tunnel deleted")
+    #         except Exception:
+    #             pass  # Ignore cleanup errors
     
     def run(self):
         """Run and keep alive"""

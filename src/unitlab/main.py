@@ -122,7 +122,7 @@ def dataset_download(
 def run_agent(
     api_key: API_KEY,
     device_id: Annotated[str, typer.Option(help="Device ID")] = None,
-    base_domain: Annotated[str, typer.Option(help="Base domain for tunnels")] = "1scan.uz",
+    base_domain: Annotated[str, typer.Option(help="Base domain for tunnels")] = "api-dev.unitlab.ai",
   
 ):
 
@@ -132,7 +132,7 @@ def run_agent(
         handlers=[logging.StreamHandler()]
     )
 
-    server_url = 'https://api-dev/unitlab-ai.com/'
+    server_url = 'https://api-dev.unitlab.ai/'
     
     if not device_id:
         import uuid

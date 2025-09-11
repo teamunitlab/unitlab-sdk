@@ -406,8 +406,7 @@ class UnitlabClient:
                 else:
                     
                     self.ssh_url = self.jupyter_url
-                
-               
+
                 if hasattr(self.tunnel_manager, 'tunnel_url') and self.tunnel_manager.tunnel_url:
                     self.jupyter_url = self.tunnel_manager.tunnel_url
                     if not hasattr(self.tunnel_manager, 'ssh_url'):
