@@ -12,10 +12,11 @@ import subprocess
 import signal
 import re
 import time
+import threading
 import psutil
 from datetime import datetime, timezone
+from .tunnel_config import CloudflareTunnel
 from .utils import get_api_url, handle_exceptions
-from pathlib import Path
 
 
 try:
@@ -75,7 +76,6 @@ class UnitlabClient:
         self.hostname = socket.gethostname()
         self.tunnel_manager = None
         self.jupyter_url = None
-        self.api_expose_url = None
         self.ssh_url = None
         self.jupyter_proc = None
         self.tunnel_proc = None
@@ -269,21 +269,15 @@ class UnitlabClient:
         self.device_id = device_id
         self.base_domain = base_domain
         
-        # Use persistent tunnel with API (each device gets deviceid.1scan.uz)
-        try:
-            from .persistent_tunnel import PersistentTunnel
-            logger.info("Using Persistent Tunnel with Cloudflare API")
-            self.tunnel_manager = PersistentTunnel(device_id=self.device_id)
-            # Don't call run() here - it has infinite loop. Call start() in setup_tunnels()
-            self.jupyter_url = None
-            self.ssh_url = None
-            self.api_url = None
-
-            
-        except ImportError as e:
-            logger.warning(f"Could not import PersistentTunnel: {e}")
-            # Fallback to easy tunnel
-            
+        # Initialize tunnel manager if available
+        if CloudflareTunnel:
+            self.tunnel_manager = CloudflareTunnel(base_domain, device_id)
+            self.jupyter_url = self.tunnel_manager.jupyter_url
+            self.ssh_url = self.tunnel_manager.ssh_url
+        else:
+            self.tunnel_manager = None
+            self.jupyter_url = f"https://jupyter-{device_id}.{base_domain}"
+            self.ssh_url = f"https://ssh-{device_id}.{base_domain}"
         
         # Setup signal handlers
         signal.signal(signal.SIGINT, self._handle_shutdown)
@@ -305,25 +299,19 @@ class UnitlabClient:
         # Add API key if provided
         if self.api_key:
             headers['Authorization'] = f'Api-Key {self.api_key}'
-            logger.debug(f"Added API key to headers: Api-Key {self.api_key[:8]}...")
-        else:
-            logger.warning("No API key found for device agent request")
         
         return headers
     
     def _post_device(self, endpoint, data=None):
         """Make authenticated POST request for device agent"""
         full_url = urllib.parse.urljoin(self.server_url, endpoint)
-        headers = self._get_device_headers()
-        logger.debug(f"Posting to {full_url}")
-        logger.debug(f"Headers: {headers}")
-        logger.debug(f"Data: {data}")
+        logger.debug(f"Posting to {full_url} with data: {data}")
         
         try:
             response = self.api_session.post(
                 full_url,
                 json=data or {},
-                headers=headers,
+                headers=self._get_device_headers(),
             )
             logger.debug(f"Response status: {response.status_code}, Response: {response.text}")
             response.raise_for_status()
@@ -337,17 +325,13 @@ class UnitlabClient:
         try:
             logger.info("Starting Jupyter notebook...")
             
-            # Use NotebookApp for jupyter notebook (not jupyter-server)
             cmd = [
                 "jupyter", "notebook",
                 "--no-browser",
-                "--NotebookApp.token=''",
-                "--NotebookApp.password=''", 
-                "--NotebookApp.allow_origin='*'",
-                "--NotebookApp.ip='0.0.0.0'",  # Listen on all interfaces
-                "--NotebookApp.port=8888",
-                "--NotebookApp.allow_root=True",  # Allow root if needed
-                "--NotebookApp.disable_check_xsrf=True"  # For Cloudflare proxy
+                "--ServerApp.token=''",
+                "--ServerApp.password=''",
+                "--ServerApp.allow_origin='*'",
+                "--ServerApp.ip='0.0.0.0'"
             ]
             
             self.jupyter_proc = subprocess.Popen(
@@ -383,46 +367,23 @@ class UnitlabClient:
     def setup_tunnels(self) -> bool:
         """Setup Cloudflare tunnels"""
         try:
+            if not self.jupyter_port:
+                logger.error("Jupyter port not available")
+                return False
+            
             if not self.tunnel_manager:
-                logger.warning("Tunnel manager not available, skipping tunnel setup")
+                logger.warning("CloudflareTunnel not available, skipping tunnel setup")
                 return True
             
-            logger.info("Setting up Cloudflare tunnel...")
+            logger.info("Setting up Cloudflare tunnels...")
+            self.tunnel_proc = self.tunnel_manager.setup(self.jupyter_port)
             
-            
-            if self.tunnel_manager.start():
-                
-                self.jupyter_proc = self.tunnel_manager.jupyter_process
-                
-                self.jupyter_url = self.tunnel_manager.jupyter_url
-                self.api_expose_url = self.tunnel_manager.api_expose_url
-                logger.info(f"Tunnel started successfully at {self.jupyter_url}")
-                self.tunnel_proc = self.tunnel_manager.tunnel_process
-                self.jupyter_port = "8888"  # Both use fixed port
-                
-              
-                if hasattr(self.tunnel_manager, 'ssh_url'):
-                    self.ssh_url = self.tunnel_manager.ssh_url
-                else:
-                    
-                    self.ssh_url = self.jupyter_url
-
-                if hasattr(self.tunnel_manager, 'tunnel_url') and self.tunnel_manager.tunnel_url:
-                    self.jupyter_url = self.tunnel_manager.tunnel_url
-                    if not hasattr(self.tunnel_manager, 'ssh_url'):
-                        self.ssh_url = self.tunnel_manager.tunnel_url
-                elif hasattr(self.tunnel_manager, 'jupyter_url'):
-                    self.jupyter_url = self.tunnel_manager.jupyter_url
-                    if not hasattr(self.tunnel_manager, 'ssh_url'):
-                        self.ssh_url = self.tunnel_manager.jupyter_url
-                
-                logger.info("✅ Tunnel and Jupyter established")
-                logger.info("URL: {}".format(self.jupyter_url))
+            if self.tunnel_proc:
+                logger.info("✅ Tunnels established")
                 self.report_services()
                 return True
-            else:
-                logger.error("Failed to start tunnel")
-                return False
+            
+            return False
             
         except Exception as e:
             logger.error(f"Tunnel setup failed: {e}")
@@ -466,16 +427,10 @@ class UnitlabClient:
             }
             
             logger.info(f"Reporting Jupyter service with URL: {self.jupyter_url}")
-            logger.debug(f"API key present: {bool(self.api_key)}")
-
-            if self.api_key:
-                logger.debug(f"API key value: {self.api_key[:8]}...")
-
             jupyter_response = self._post_device(
                 f"/api/tunnel/agent/jupyter/{self.device_id}/", 
                 jupyter_data
             )
-
             logger.info(f"Reported Jupyter service: {jupyter_response.status_code if hasattr(jupyter_response, 'status_code') else jupyter_response}")
             
             # Report SSH service (always report, even if SSH is not running locally)
@@ -506,22 +461,7 @@ class UnitlabClient:
                 ssh_data
             )
             logger.info(f"Reported SSH service: {ssh_response.status_code if hasattr(ssh_response, 'status_code') else ssh_response}")
-            logger.info("Reporting  API endpoint:")
             
-            api_expose_data = {
-                "service_type": "api",
-                "service_name": f"api-{self.device_id}",
-                'local_port': None,
-                'tunnel_url': self.api_expose_url,
-                'status': 'online'
-            }
-
-            api_expose_response = self._post_device(
-                f"/api/tunnel/agent/api-url/{self.device_id}/",
-                api_expose_data
-            )
-            logger.info(f"Reported Api service: {api_expose_response.status_code if hasattr(api_expose_response, 'status_code') else api_expose_response}")
-
         except Exception as e:
             logger.error(f"Failed to report services: {e}", exc_info=True)
     
@@ -565,55 +505,55 @@ class UnitlabClient:
         
         return metrics
     
-    # def send_metrics(self):
-    #     """Send metrics to server"""
-    #     try:
-    #         metrics = self.collect_metrics()
+    def send_metrics(self):
+        """Send metrics to server"""
+        try:
+            metrics = self.collect_metrics()
             
-    #         # Send CPU metrics
-    #         if 'cpu' in metrics:
-    #             self._post_device(f"/api/tunnel/agent/cpu/{self.device_id}/", metrics['cpu'])
+            # Send CPU metrics
+            if 'cpu' in metrics:
+                self._post_device(f"/api/tunnel/agent/cpu/{self.device_id}/", metrics['cpu'])
             
-    #         # Send RAM metrics  
-    #         if 'ram' in metrics:
-    #             self._post_device(f"/api/tunnel/agent/ram/{self.device_id}/", metrics['ram'])
+            # Send RAM metrics  
+            if 'ram' in metrics:
+                self._post_device(f"/api/tunnel/agent/ram/{self.device_id}/", metrics['ram'])
             
-    #         # Send GPU metrics if available
-    #         if 'gpu' in metrics and metrics['gpu']:
-    #             self._post_device(f"/api/tunnel/agent/gpu/{self.device_id}/", metrics['gpu'])
+            # Send GPU metrics if available
+            if 'gpu' in metrics and metrics['gpu']:
+                self._post_device(f"/api/tunnel/agent/gpu/{self.device_id}/", metrics['gpu'])
             
-    #         logger.debug(f"Metrics sent - CPU: {metrics['cpu']['percent']:.1f}%, RAM: {metrics['ram']['percent']:.1f}%")
+            logger.debug(f"Metrics sent - CPU: {metrics['cpu']['percent']:.1f}%, RAM: {metrics['ram']['percent']:.1f}%")
             
-    #     except Exception as e:
-    #         logger.error(f"Failed to send metrics: {e}")
+        except Exception as e:
+            logger.error(f"Failed to send metrics: {e}")
     
-    # def metrics_loop(self):
-    #     """Background thread for sending metrics"""
-    #     logger.info("Starting metrics thread")
+    def metrics_loop(self):
+        """Background thread for sending metrics"""
+        logger.info("Starting metrics thread")
         
-    #     while self.running:
-    #         try:
-    #             self.send_metrics()
+        while self.running:
+            try:
+                self.send_metrics()
                 
-    #             # Check if processes are still running
-    #             if self.jupyter_proc and self.jupyter_proc.poll() is not None:
-    #                 logger.warning("Jupyter process died")
-    #                 self.jupyter_proc = None
+                # Check if processes are still running
+                if self.jupyter_proc and self.jupyter_proc.poll() is not None:
+                    logger.warning("Jupyter process died")
+                    self.jupyter_proc = None
                 
-    #             if self.tunnel_proc and self.tunnel_proc.poll() is not None:
-    #                 logger.warning("Tunnel process died")
-    #                 self.tunnel_proc = None
+                if self.tunnel_proc and self.tunnel_proc.poll() is not None:
+                    logger.warning("Tunnel process died")
+                    self.tunnel_proc = None
                 
-    #         except Exception as e:
-    #             logger.error(f"Metrics loop error: {e}")
+            except Exception as e:
+                logger.error(f"Metrics loop error: {e}")
             
-    #         # Wait for next interval (default 5 seconds)
-    #         for _ in range(3):
-    #             if not self.running:
-    #                 break
-    #             time.sleep(1)
+            # Wait for next interval (default 5 seconds)
+            for _ in range(3):
+                if not self.running:
+                    break
+                time.sleep(1)
         
-    #     logger.info("Metrics thread stopped")
+        logger.info("Metrics thread stopped")
     
     def run_device_agent(self):
         """Main run method for device agent"""
@@ -627,16 +567,21 @@ class UnitlabClient:
         # Check SSH
         self.check_ssh()
         
+        # Start Jupyter
+        if not self.start_jupyter():
+            logger.error("Failed to start Jupyter")
+            return
         
-        logger.info("Starting integrated Jupyter and tunnel...")
+        # Wait a moment for Jupyter to fully initialize
+        time.sleep(1)
         
-      
+        # Setup tunnels
         if not self.setup_tunnels():
             logger.error("Failed to setup tunnels")
             self.cleanup_device_agent()
             return
         
-        
+        # Print access information
         logger.info("=" * 50)
         logger.info("🎉 All services started successfully!")
         logger.info(f"📔 Jupyter: {self.jupyter_url}")
@@ -649,8 +594,8 @@ class UnitlabClient:
         logger.info("=" * 50)
         
         # Start metrics thread
-        # self.metrics_thread = threading.Thread(target=self.metrics_loop, daemon=True)
-        # self.metrics_thread.start()
+        self.metrics_thread = threading.Thread(target=self.metrics_loop, daemon=True)
+        self.metrics_thread.start()
         
         # Main loop
         try:
@@ -667,28 +612,22 @@ class UnitlabClient:
         
         self.running = False
         
-        # With SimpleTunnel, we just call stop() method
-        if self.tunnel_manager and hasattr(self.tunnel_manager, 'stop'):
-            logger.info("Stopping tunnel and Jupyter...")
-            self.tunnel_manager.stop()
-        else:
-            # Fallback to individual process cleanup
-            # Stop Jupyter
-            if self.jupyter_proc:
-                logger.info("Stopping Jupyter...")
-                self.jupyter_proc.terminate()
-                try:
-                    self.jupyter_proc.wait(timeout=5)
-                except subprocess.TimeoutExpired:
-                    self.jupyter_proc.kill()
-            
-            # Stop tunnel
-            if self.tunnel_proc:
-                logger.info("Stopping tunnel...")
-                self.tunnel_proc.terminate()
-                try:
-                    self.tunnel_proc.wait(timeout=5)
-                except subprocess.TimeoutExpired:
-                    self.tunnel_proc.kill()
+        # Stop Jupyter
+        if self.jupyter_proc:
+            logger.info("Stopping Jupyter...")
+            self.jupyter_proc.terminate()
+            try:
+                self.jupyter_proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                self.jupyter_proc.kill()
+        
+        # Stop tunnel
+        if self.tunnel_proc:
+            logger.info("Stopping tunnel...")
+            self.tunnel_proc.terminate()
+            try:
+                self.tunnel_proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                self.tunnel_proc.kill()
         
         logger.info("Cleanup complete")

@@ -29,13 +29,6 @@ setup(
         "tqdm",
         "typer",
         "validators",
-        'psutil',
-        'pyyaml',
-        'jupyter',
-        'python-dotenv',
-        'uvicorn',
-        'fastapi',
-        
     ],
     entry_points={
         "console_scripts": ["unitlab=unitlab.main:app"],

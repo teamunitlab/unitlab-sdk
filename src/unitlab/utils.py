@@ -66,5 +66,3 @@ def get_api_url() -> str:
     except Exception:
         return "https://api.unitlab.ai"
 
-
-
