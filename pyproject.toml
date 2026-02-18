@@ -1,0 +1,67 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "unitlab"
+version = "2.4.1"
+description = "Python SDK for the Unitlab.ai data annotation platform"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.10"
+authors = [{ name = "Unitlab Inc.", email = "team@unitlab.ai" }]
+keywords = ["unitlab", "annotation", "machine-learning", "data-labeling", "sdk"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+dependencies = [
+    "aiohttp>=3.9",
+    "aiofiles>=23.0",
+    "requests>=2.28",
+    "tqdm>=4.60",
+    "typer>=0.9",
+    "validators>=0.20",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+    "pytest-asyncio>=0.21",
+    "responses>=0.23",
+    "aioresponses>=0.7",
+    "ruff>=0.4",
+    "build>=1.0",
+    "twine>=5.0",
+]
+
+[project.scripts]
+unitlab = "unitlab.cli:app"
+
+[project.urls]
+Homepage = "https://unitlab.ai"
+Documentation = "https://docs.unitlab.ai"
+Repository = "https://github.com/teamunitlab/unitlab-sdk"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/unitlab"]
+
+[tool.ruff]
+target-version = "py310"
+line-length = 88
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "W", "UP", "B", "SIM", "RUF"]
+
+[tool.ruff.format]
+quote-style = "double"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
