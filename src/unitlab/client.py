@@ -6,11 +6,9 @@ import logging
 import os
 from pathlib import Path
 from typing import Any
-from urllib.parse import urljoin, urlparse
+from urllib.parse import urlparse
 
-import aiofiles
-import aiohttp
-import requests
+import httpx
 import tqdm
 
 from ._config import get_api_key, get_api_url
@@ -28,6 +26,27 @@ _UPLOAD_CONCURRENCY = 20
 _DOWNLOAD_CONCURRENCY = 50
 
 
+def _extract_error_message(response: httpx.Response) -> str:
+    """Extract a human-readable message from an error response."""
+    try:
+        body = response.json()
+        if isinstance(body, dict):
+            for key in ("detail", "message"):
+                if key in body:
+                    return str(body[key])
+            parts = []
+            for field, errors in body.items():
+                if isinstance(errors, list):
+                    parts.append(f"{field}: {', '.join(str(e) for e in errors)}")
+                else:
+                    parts.append(f"{field}: {errors}")
+            if parts:
+                return "; ".join(parts)
+    except (ValueError, KeyError):
+        pass
+    return response.text
+
+
 def handle_exceptions(f):
     """Catch exceptions and throw Unitlab exceptions."""
 
@@ -37,23 +56,23 @@ def handle_exceptions(f):
             r = f(self, *args, **kwargs)
             r.raise_for_status()
             return r.json()
-        except requests.exceptions.Timeout as e:
+        except httpx.TimeoutException as e:
             raise TimeoutError(message=str(e), detail=e) from e
-        except requests.exceptions.HTTPError as e:
-            text = e.response.text.lower()
+        except httpx.HTTPStatusError as e:
+            text = _extract_error_message(e.response)
             if e.response.status_code == 401:
                 raise AuthenticationError(
                     message="Authentication failed", detail=e
                 ) from e
             if e.response.status_code == 403:
-                raise SubscriptionError(
-                    message=f"Forbidden: {e.response.status_code} {e.response.reason}",
-                    detail=e,
-                ) from e
-            if "not found" in text:
+                msg = f"Forbidden: {e.response.status_code} {e.response.reason_phrase}"
+                raise SubscriptionError(message=msg, detail=e) from e
+            if e.response.status_code == 404 or "not found" in text.lower():
                 raise NotFoundError(message=text, detail=e) from e
             raise NetworkError(message=text, detail=e) from e
-        except requests.exceptions.RequestException as e:
+        except ValueError as e:
+            raise NetworkError(message="Unexpected response format", detail=e) from e
+        except httpx.HTTPError as e:
             raise NetworkError(message=str(e), detail=e) from e
 
     return wrapper
@@ -123,11 +142,12 @@ class UnitlabClient:
         self.api_url: str = (
             api_url or os.environ.get("UNITLAB_API_URL") or get_api_url()
         )
-        self.api_session = requests.Session()
-        self.api_session.headers["Authorization"] = f"Api-Key {self.api_key}"
-        adapter = requests.adapters.HTTPAdapter(max_retries=3)
-        self.api_session.mount("http://", adapter)
-        self.api_session.mount("https://", adapter)
+        self._client = httpx.Client(
+            base_url=self.api_url,
+            headers={"Authorization": f"Api-Key {self.api_key}"},
+            transport=httpx.HTTPTransport(retries=3),
+            timeout=60.0,
+        )
 
     def close(self) -> None:
         """Close :class:`UnitlabClient` connections.
@@ -147,7 +167,7 @@ class UnitlabClient:
             with UnitlabClient() as client:
                 client.projects()
         """
-        self.api_session.close()
+        self._client.close()
 
     def __enter__(self) -> UnitlabClient:
         return self
@@ -160,21 +180,15 @@ class UnitlabClient:
     ) -> None:
         self.close()
 
-    def _get_headers(self) -> dict[str, str]:
-        return {"Authorization": f"Api-Key {self.api_key}"}
-
     @handle_exceptions
-    def _get(self, endpoint: str) -> requests.Response:
-        return self.api_session.get(urljoin(self.api_url, endpoint))
+    def _get(self, endpoint: str) -> httpx.Response:
+        return self._client.get(endpoint)
 
     @handle_exceptions
     def _post(
         self, endpoint: str, data: dict[str, Any] | None = None
-    ) -> requests.Response:
-        return self.api_session.post(
-            urljoin(self.api_url, endpoint),
-            json=data if data is not None else {},
-        )
+    ) -> httpx.Response:
+        return self._client.post(endpoint, json=data if data is not None else {})
 
     def projects(self, pretty: int = 0) -> Any:
         return self._get(f"/api/sdk/projects/?pretty={pretty}")
@@ -234,25 +248,22 @@ class UnitlabClient:
         semaphore = asyncio.Semaphore(_UPLOAD_CONCURRENCY)
 
         async def post_file(
-            session: aiohttp.ClientSession, file: str, project_id: str
+            client: httpx.AsyncClient, file: str, project_id: str
         ) -> int:
-            async with semaphore, aiofiles.open(file, "rb") as f:
-                form_data = aiohttp.FormData()
-                form_data.add_field(
-                    "file", await f.read(), filename=os.path.basename(file)
-                )
+            async with semaphore:
+                extra_data: dict[str, str] = {}
                 if generic_type == "text":
-                    form_data.add_field("sentences_per_chunk", str(sentences_per_chunk))
+                    extra_data["sentences_per_chunk"] = str(sentences_per_chunk)
                 elif generic_type == "video":
-                    form_data.add_field("fps", str(fps))
+                    extra_data["fps"] = str(fps)
 
                 try:
-                    async with session.post(
-                        urljoin(
-                            self.api_url, f"/api/sdk/projects/{project_id}/upload-data/"
-                        ),
-                        data=form_data,
-                    ) as response:
+                    with open(file, "rb") as f:
+                        response = await client.post(
+                            f"/api/sdk/projects/{project_id}/upload-data/",
+                            files={"file": (os.path.basename(file), f)},
+                            data=extra_data,
+                        )
                         response.raise_for_status()
                         return 1
                 except Exception as e:
@@ -262,19 +273,18 @@ class UnitlabClient:
         async def main() -> None:
             logger.info(f"Uploading {num_files} files to project {project_id}")
             with tqdm.tqdm(total=num_files, ncols=80) as pbar:
-                async with aiohttp.ClientSession(
-                    headers=self._get_headers()
-                ) as session:
+                async with httpx.AsyncClient(
+                    base_url=self.api_url,
+                    headers={"Authorization": f"Api-Key {self.api_key}"},
+                    timeout=600.0,
+                ) as client:
                     for i in range(num_batches):
-                        tasks = []
-                        for file in filtered_files[
-                            i * batch_size : min((i + 1) * batch_size, num_files)
-                        ]:
-                            tasks.append(
-                                post_file(
-                                    session=session, file=file, project_id=project_id
-                                )
-                            )
+                        tasks = [
+                            post_file(client=client, file=file, project_id=project_id)
+                            for file in filtered_files[
+                                i * batch_size : min((i + 1) * batch_size, num_files)
+                            ]
+                        ]
                         for f in asyncio.as_completed(tasks):
                             pbar.update(await f)
 
@@ -295,17 +305,21 @@ class UnitlabClient:
             },
         )
 
-        with requests.get(url=response["file"], stream=True) as r:
-            r.raise_for_status()
+        file_url = response["file"]
+        try:
+            with httpx.stream("GET", file_url, timeout=300.0) as r:
+                r.raise_for_status()
 
-            parsed_url = urlparse(response["file"])
-            filename = os.path.basename(parsed_url.path)
+                parsed_url = urlparse(file_url)
+                filename = os.path.basename(parsed_url.path)
 
-            with open(filename, "wb") as f:
-                for chunk in r.iter_content(chunk_size=1024 * 1024):
-                    f.write(chunk)
-            logger.info(f"File: {os.path.abspath(filename)}")
-            return os.path.abspath(filename)
+                with open(filename, "wb") as f:
+                    for chunk in r.iter_bytes():
+                        f.write(chunk)
+                logger.info(f"File: {os.path.abspath(filename)}")
+                return os.path.abspath(filename)
+        except httpx.HTTPError as e:
+            raise NetworkError(message=f"Failed to download file: {e}", detail=e) from e
 
     def dataset_download_files(self, dataset_id: str) -> str:
         """Download files from a dataset.
@@ -350,26 +364,27 @@ class UnitlabClient:
         semaphore = asyncio.Semaphore(_DOWNLOAD_CONCURRENCY)
 
         async def download_file(
-            session: aiohttp.ClientSession, dataset_file: dict[str, str]
+            client: httpx.AsyncClient, dataset_file: dict[str, str]
         ) -> int:
-            async with semaphore, session.get(url=dataset_file["source"]) as r:
+            async with semaphore:
                 try:
-                    r.raise_for_status()
+                    async with client.stream("GET", dataset_file["source"]) as r:
+                        r.raise_for_status()
+                        with open(dataset_file["file_path"], "wb") as f:
+                            async for chunk in r.aiter_bytes():
+                                f.write(chunk)
+                        return 1
                 except Exception as e:
                     logger.error(
                         f"Error downloading file {dataset_file['file_name']} - {e}"
                     )
                     return 0
-                async with aiofiles.open(dataset_file["file_path"], "wb") as f:
-                    async for chunk in r.content.iter_any():
-                        await f.write(chunk)
-                    return 1
 
         async def main() -> None:
             with tqdm.tqdm(total=len(files_to_download), ncols=80) as pbar:
-                async with aiohttp.ClientSession() as session:
+                async with httpx.AsyncClient(timeout=600.0) as client:
                     tasks = [
-                        download_file(session=session, dataset_file=df)
+                        download_file(client=client, dataset_file=df)
                         for df in files_to_download
                     ]
                     for f in asyncio.as_completed(tasks):

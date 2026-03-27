@@ -39,7 +39,7 @@ class DownloadType(str, Enum):
 
 class DatasetSplit(str, Enum):
     train = "train"
-    val = "val"
+    validation = "validation"
     test = "test"
 
 
@@ -120,24 +120,17 @@ def dataset_download(
         typer.Option(help="Download type (annotation, files)"),
     ] = DownloadType.annotation,
     export_type: Annotated[
-        str, typer.Option(help="Export type (COCO, YOLOv8, YOLOv5 ..etc)")
+        str,
+        typer.Option(help="Export type (e.g. COCO, YOLOv8, YOLOv5, UUEF)"),
     ] = "COCO",
     split_type: Annotated[
-        DatasetSplit, typer.Option(help="Dataset split (train, val, test)")
+        DatasetSplit, typer.Option(help="Dataset split (train, validation, test)")
     ] = DatasetSplit.train,
 ):
     if download_type == DownloadType.annotation:
-        if not export_type:
-            raise typer.BadParameter(
-                "Export type is required when download type is annotation"
-            )
-        if not split_type:
-            raise typer.BadParameter(
-                "Split type is required when download type is annotation"
-            )
-        get_client(api_key).dataset_download(pk, export_type, split_type)
+        get_client(api_key).dataset_download(str(pk), export_type, split_type.value)
     else:
-        typer.echo(get_client(api_key).dataset_download_files(pk))
+        typer.echo(get_client(api_key).dataset_download_files(str(pk)))
 
 
 if __name__ == "__main__":
