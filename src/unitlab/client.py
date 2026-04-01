@@ -4,6 +4,7 @@ import asyncio
 import functools
 import logging
 import os
+import uuid
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
@@ -247,6 +248,9 @@ class UnitlabClient:
         num_batches = (num_files + batch_size - 1) // batch_size
         semaphore = asyncio.Semaphore(_UPLOAD_CONCURRENCY)
 
+        # Medical projects use session-based upload with finalize
+        session_id = str(uuid.uuid4()) if generic_type == "medical" else None
+
         async def post_file(
             client: httpx.AsyncClient, file: str, project_id: str
         ) -> int:
@@ -256,6 +260,8 @@ class UnitlabClient:
                     extra_data["sentences_per_chunk"] = str(sentences_per_chunk)
                 elif generic_type == "video":
                     extra_data["fps"] = str(fps)
+                if session_id:
+                    extra_data["session_id"] = session_id
 
                 try:
                     with open(file, "rb") as f:
@@ -287,6 +293,15 @@ class UnitlabClient:
                         ]
                         for f in asyncio.as_completed(tasks):
                             pbar.update(await f)
+
+                    # Finalize medical session after all uploads
+                    if session_id:
+                        response = await client.post(
+                            f"/api/sdk/projects/{project_id}/"
+                            f"medical-upload-sessions/{session_id}/finalize/",
+                        )
+                        response.raise_for_status()
+                        logger.info("Medical session finalized")
 
         asyncio.run(main())
 
