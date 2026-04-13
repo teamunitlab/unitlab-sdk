@@ -37,12 +37,6 @@ class DownloadType(str, Enum):
     files = "files"
 
 
-class DatasetSplit(str, Enum):
-    train = "train"
-    validation = "validation"
-    test = "test"
-
-
 @app.command(help="Configure the credentials")
 def configure(
     api_key: Annotated[
@@ -124,11 +118,14 @@ def dataset_download(
         typer.Option(help="Export type (e.g. COCO, YOLOv8, YOLOv5, UUEF)"),
     ] = "COCO",
     split_type: Annotated[
-        DatasetSplit, typer.Option(help="Dataset split (train, validation, test)")
-    ] = DatasetSplit.train,
+        str | None,
+        typer.Option(
+            help="Dataset split (e.g. train, validation). Auto-detected if omitted."
+        ),
+    ] = None,
 ):
     if download_type == DownloadType.annotation:
-        get_client(api_key).dataset_download(str(pk), export_type, split_type.value)
+        get_client(api_key).dataset_download(str(pk), export_type, split_type)
     else:
         typer.echo(get_client(api_key).dataset_download_files(str(pk)))
 

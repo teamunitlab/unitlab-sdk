@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "unitlab"
-version = "2.4.3"
+version = "2.4.4"
 description = "Python SDK for the Unitlab.ai data annotation platform"
 readme = "README.md"
 license = "MIT"
