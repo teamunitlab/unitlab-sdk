@@ -308,49 +308,20 @@ class UnitlabClient:
     def datasets(self, pretty: int = 0) -> Any:
         return self._get(f"/api/sdk/datasets/?pretty={pretty}")
 
-    def dataset_info(self, dataset_id: str) -> Any:
-        """Return metadata for a dataset.
-
-        Includes name, version, annotation_type, number_of_data,
-        download_formats and the list of available ``splits``.
-        """
-        return self._get(f"/api/sdk/datasets/{dataset_id}/")
-
     def dataset_download(
         self,
         dataset_id: str,
         export_type: str,
         split_type: str | None = None,
     ) -> str:
-        if split_type is None:
-            info = self.dataset_info(dataset_id)
-            splits = info.get("splits") or []
-            if not splits:
-                raise NetworkError(
-                    message=(
-                        "No splits available for this dataset. Nothing to download."
-                    ),
-                    detail=None,
-                )
-            if len(splits) > 1:
-                raise NetworkError(
-                    message=(
-                        f"Multiple splits available: {', '.join(splits)}. "
-                        f"Specify one with split_type=..."
-                    ),
-                    detail=None,
-                )
-            split_type = splits[0]
-            logger.info(f"Auto-selected split: {split_type}")
+        data: dict[str, Any] = {
+            "download_type": "annotation",
+            "export_type": export_type,
+        }
+        if split_type is not None:
+            data["split_type"] = split_type
 
-        response = self._post(
-            f"/api/sdk/datasets/{dataset_id}/",
-            data={
-                "download_type": "annotation",
-                "export_type": export_type,
-                "split_type": split_type,
-            },
-        )
+        response = self._post(f"/api/sdk/datasets/{dataset_id}/", data=data)
 
         file_url = response["file"]
         try:
@@ -429,7 +400,9 @@ class UnitlabClient:
 
         async def main() -> None:
             with tqdm.tqdm(total=len(files_to_download), ncols=80) as pbar:
-                async with httpx.AsyncClient(timeout=600.0) as client:
+                async with httpx.AsyncClient(
+                    timeout=600.0, follow_redirects=True
+                ) as client:
                     tasks = [
                         download_file(client=client, dataset_file=df)
                         for df in files_to_download
