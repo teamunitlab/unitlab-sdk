@@ -6,7 +6,7 @@ import logging
 import os
 import uuid
 from pathlib import Path
-from typing import Any
+from typing import Any, ClassVar
 from urllib.parse import urlparse
 
 import httpx
@@ -203,6 +203,46 @@ class UnitlabClient:
     def project_upload_info(self, project_id: str) -> Any:
         return self._get(f"/api/sdk/projects/{project_id}/upload-info/")
 
+    # Supported upload extension groups. Mixed projects need per-file type
+    # detection so the SDK can attach only the options relevant to each file.
+    _EXTENSIONS_BY_GENERIC_TYPE: ClassVar[dict[str, set[str]]] = {
+        "img": {"jpg", "png", "jpeg", "webp", "gif", "bmp", "ico", "svg"},
+        "text": {"txt"},
+        "video": {"mp4", "avi", "mov", "webm", "mkv", "m4v", "wmv", "flv"},
+        "audio": {"mp3", "wav", "ogg", "aac", "flac", "m4a"},
+        "medical": {"dcm", "nii", "nii.gz", "nrrd"},
+        "document": {"pdf"},
+    }
+
+    @classmethod
+    def _extension_for_filename(cls, filename: str) -> str:
+        name = filename.lower()
+        if name.endswith(".nii.gz"):
+            return "nii.gz"
+        return name.rsplit(".", 1)[-1] if "." in name else ""
+
+    @classmethod
+    def _detect_generic_type(cls, filename: str) -> str | None:
+        """Resolve generic_type from a filename's extension.
+
+        Handles the compound suffix `nii.gz` by checking the last two dotted
+        components first. Returns None for unknown extensions; callers should
+        fall back to the project-level type or reject the file.
+        """
+        ext = cls._extension_for_filename(filename)
+        for generic_type, exts in cls._EXTENSIONS_BY_GENERIC_TYPE.items():
+            if ext in exts:
+                return generic_type
+        return None
+
+    @classmethod
+    def _known_file_extensions(cls) -> set[str]:
+        return {
+            extension
+            for extensions in cls._EXTENSIONS_BY_GENERIC_TYPE.values()
+            for extension in extensions
+        }
+
     def project_upload_data(
         self,
         project_id: str,
@@ -210,31 +250,54 @@ class UnitlabClient:
         batch_size: int = 100,
         sentences_per_chunk: int = 10,
         fps: float = 1.0,
-    ) -> None:
+    ) -> dict[str, int]:
         directory = str(directory)
         if not os.path.isdir(directory):
             raise ValueError(f"Directory {directory} does not exist")
 
         upload_info = self.project_upload_info(project_id)
-        accepted_formats: set[str] = set(upload_info["accepted_formats"])
-        max_file_size_bytes: int = upload_info["max_file_size"]
-        generic_type: str = upload_info["generic_type"]
+        accepted_formats: set[str] = {
+            str(ext).lower().lstrip(".") for ext in upload_info["accepted_formats"]
+        }
+        if not accepted_formats:
+            accepted_formats = self._known_file_extensions()
+        # Some projects do not declare a single type, so infer per file and
+        # use this only as a fallback for unrecognized accepted extensions.
+        project_generic_type: str | None = upload_info.get("generic_type")
+        max_file_sizes: dict[str, int] = {
+            str(generic_type): int(max_size)
+            for generic_type, max_size in (
+                upload_info.get("max_file_sizes") or {}
+            ).items()
+        }
+        fallback_max_file_size = upload_info.get("max_file_size")
 
-        # Single-pass file discovery with os.scandir
+        def max_file_size_for(filename: str) -> int | None:
+            file_generic_type = (
+                self._detect_generic_type(filename) or project_generic_type
+            )
+            if file_generic_type and file_generic_type in max_file_sizes:
+                return max_file_sizes[file_generic_type]
+            if project_generic_type and fallback_max_file_size is not None:
+                return int(fallback_max_file_size)
+            return None
+
         files: list[str] = []
-        with os.scandir(directory) as entries:
-            for entry in entries:
-                if not entry.is_file():
-                    continue
-                ext = entry.name.rsplit(".", 1)[-1] if "." in entry.name else ""
-                if ext.lower() in accepted_formats:
-                    files.append(entry.path)
+        for root, _dirs, filenames in os.walk(directory):
+            for filename in sorted(filenames):
+                ext = self._extension_for_filename(filename)
+                if ext in accepted_formats:
+                    files.append(os.path.join(root, filename))
 
         filtered_files: list[str] = []
-        max_file_size_mb = max_file_size_bytes / 1024 / 1024
         for file in files:
             file_size_bytes = os.path.getsize(file)
-            if file_size_bytes > max_file_size_bytes:
+            max_file_size_bytes = max_file_size_for(os.path.basename(file))
+            if (
+                max_file_size_bytes is not None
+                and file_size_bytes > max_file_size_bytes
+            ):
+                max_file_size_mb = max_file_size_bytes / 1024 / 1024
                 file_size_mb = file_size_bytes / 1024 / 1024
                 logger.warning(
                     f"File {file} is too large "
@@ -245,23 +308,42 @@ class UnitlabClient:
             filtered_files.append(file)
 
         num_files = len(filtered_files)
+        if num_files == 0:
+            raise ValueError(
+                "No uploadable files found. Accepted extensions: "
+                f"{', '.join(sorted(accepted_formats))}"
+            )
+
         num_batches = (num_files + batch_size - 1) // batch_size
         semaphore = asyncio.Semaphore(_UPLOAD_CONCURRENCY)
 
-        # Medical projects use session-based upload with finalize
-        session_id = str(uuid.uuid4()) if generic_type == "medical" else None
+        # Medical files in the same upload run share one session; non-medical
+        # files are sent without it.
+        medical_session_id = str(uuid.uuid4())
+
+        # Finalization is only relevant when this batch includes medical files.
+        has_medical_files = any(
+            self._detect_generic_type(os.path.basename(f)) == "medical"
+            for f in filtered_files
+        )
 
         async def post_file(
             client: httpx.AsyncClient, file: str, project_id: str
-        ) -> int:
+        ) -> tuple[str, str | None, bool, str | None]:
             async with semaphore:
+                # Mixed uploads need per-file options; single-type projects
+                # can still fall back to the project-level type.
+                file_generic_type = (
+                    self._detect_generic_type(os.path.basename(file))
+                    or project_generic_type
+                )
                 extra_data: dict[str, str] = {}
-                if generic_type == "text":
+                if file_generic_type == "text":
                     extra_data["sentences_per_chunk"] = str(sentences_per_chunk)
-                elif generic_type == "video":
+                elif file_generic_type == "video":
                     extra_data["fps"] = str(fps)
-                if session_id:
-                    extra_data["session_id"] = session_id
+                elif file_generic_type == "medical":
+                    extra_data["session_id"] = medical_session_id
 
                 try:
                     with open(file, "rb") as f:
@@ -271,13 +353,22 @@ class UnitlabClient:
                             data=extra_data,
                         )
                         response.raise_for_status()
-                        return 1
+                        return file, file_generic_type, True, None
+                except httpx.HTTPStatusError as e:
+                    return (
+                        file,
+                        file_generic_type,
+                        False,
+                        _extract_error_message(e.response),
+                    )
                 except Exception as e:
-                    logger.error(f"Error uploading file {file} - {e}")
-                    return 0
+                    return file, file_generic_type, False, str(e)
 
-        async def main() -> None:
+        async def main() -> dict[str, int]:
             logger.info(f"Uploading {num_files} files to project {project_id}")
+            uploaded = 0
+            uploaded_medical = 0
+            failed_files: list[tuple[str, str]] = []
             with tqdm.tqdm(total=num_files, ncols=80) as pbar:
                 async with httpx.AsyncClient(
                     base_url=self.api_url,
@@ -292,18 +383,63 @@ class UnitlabClient:
                             ]
                         ]
                         for f in asyncio.as_completed(tasks):
-                            pbar.update(await f)
+                            file, generic_type, success, error = await f
+                            pbar.update(1)
+                            if success:
+                                uploaded += 1
+                                if generic_type == "medical":
+                                    uploaded_medical += 1
+                            else:
+                                failed_files.append(
+                                    (file, error or "Unknown upload error")
+                                )
+                                logger.error(
+                                    "Error uploading file %s - %s",
+                                    file,
+                                    error or "Unknown upload error",
+                                )
 
-                    # Finalize medical session after all uploads
-                    if session_id:
-                        response = await client.post(
-                            f"/api/sdk/projects/{project_id}/"
-                            f"medical-upload-sessions/{session_id}/finalize/",
-                        )
-                        response.raise_for_status()
-                        logger.info("Medical session finalized")
+                    # Finalize only after at least one medical file succeeded.
+                    if has_medical_files and uploaded_medical:
+                        try:
+                            response = await client.post(
+                                f"/api/sdk/projects/{project_id}/"
+                                f"medical-upload-sessions/{medical_session_id}/finalize/",
+                            )
+                            response.raise_for_status()
+                            logger.info("Medical session finalized")
+                        except httpx.HTTPStatusError as e:
+                            raise NetworkError(
+                                message=_extract_error_message(e.response),
+                                detail=e,
+                            ) from e
+                        except httpx.HTTPError as e:
+                            raise NetworkError(
+                                message=f"Failed to finalize medical session: {e}",
+                                detail=e,
+                            ) from e
 
-        asyncio.run(main())
+            if failed_files:
+                first_failures = "; ".join(
+                    f"{os.path.basename(path)}: {error}"
+                    for path, error in failed_files[:5]
+                )
+                if len(failed_files) > 5:
+                    first_failures += f"; and {len(failed_files) - 5} more"
+                raise NetworkError(
+                    message=(
+                        f"Failed to upload {len(failed_files)} of {num_files} files. "
+                        f"{first_failures}"
+                    )
+                )
+
+            return {
+                "total": num_files,
+                "uploaded": uploaded,
+                "failed": len(failed_files),
+            }
+
+        return asyncio.run(main())
 
     def datasets(self, pretty: int = 0) -> Any:
         return self._get(f"/api/sdk/datasets/?pretty={pretty}")
@@ -311,12 +447,11 @@ class UnitlabClient:
     def dataset_download(
         self,
         dataset_id: str,
-        export_type: str,
+        *,
         split_type: str | None = None,
     ) -> str:
         data: dict[str, Any] = {
             "download_type": "annotation",
-            "export_type": export_type,
         }
         if split_type is not None:
             data["split_type"] = split_type
@@ -383,7 +518,7 @@ class UnitlabClient:
 
         async def download_file(
             client: httpx.AsyncClient, dataset_file: dict[str, str]
-        ) -> int:
+        ) -> tuple[str, bool, str | None]:
             async with semaphore:
                 try:
                     async with client.stream("GET", dataset_file["source"]) as r:
@@ -391,14 +526,15 @@ class UnitlabClient:
                         with open(dataset_file["file_path"], "wb") as f:
                             async for chunk in r.aiter_bytes():
                                 f.write(chunk)
-                        return 1
+                        return dataset_file["file_name"], True, None
                 except Exception as e:
                     logger.error(
                         f"Error downloading file {dataset_file['file_name']} - {e}"
                     )
-                    return 0
+                    return dataset_file["file_name"], False, str(e)
 
         async def main() -> None:
+            failed_files: list[tuple[str, str]] = []
             with tqdm.tqdm(total=len(files_to_download), ncols=80) as pbar:
                 async with httpx.AsyncClient(
                     timeout=600.0, follow_redirects=True
@@ -408,7 +544,25 @@ class UnitlabClient:
                         for df in files_to_download
                     ]
                     for f in asyncio.as_completed(tasks):
-                        pbar.update(await f)
+                        file_name, success, error = await f
+                        pbar.update(1)
+                        if not success:
+                            failed_files.append(
+                                (file_name, error or "Unknown download error")
+                            )
+
+            if failed_files:
+                first_failures = "; ".join(
+                    f"{name}: {error}" for name, error in failed_files[:5]
+                )
+                if len(failed_files) > 5:
+                    first_failures += f"; and {len(failed_files) - 5} more"
+                raise NetworkError(
+                    message=(
+                        f"Failed to download {len(failed_files)} of "
+                        f"{len(files_to_download)} files. {first_failures}"
+                    )
+                )
 
         asyncio.run(main())
         return base_folder

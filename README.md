@@ -100,14 +100,24 @@ client.project_upload_data(
 )
 ```
 
-Additional options for specific project types:
+The upload command accepts mixed directories. File type is detected per file from
+the supported extensions: images, text, video, audio, medical
+(`.dcm`, `.nii`, `.nii.gz`, `.nrrd`), and documents (`.pdf`).
+
+Additional options for specific file types:
 
 ```python
-# Text projects
+# Text files
 client.project_upload_data("PROJECT_ID", "./docs", sentences_per_chunk=10)
 
-# Video projects
+# Video files
 client.project_upload_data("PROJECT_ID", "./videos", fps=30.0)
+
+# PDF documents
+client.project_upload_data("PROJECT_ID", "./pdfs")
+
+# DICOM, NIfTI, and NRRD medical volumes
+client.project_upload_data("PROJECT_ID", "./medical")
 ```
 
 ### Datasets
@@ -116,8 +126,11 @@ client.project_upload_data("PROJECT_ID", "./videos", fps=30.0)
 # List all datasets
 datasets = client.datasets()
 
-# Download annotations (COCO, YOLOv8, YOLOv5, etc.)
-path = client.dataset_download("DATASET_ID", export_type="COCO", split_type="train")
+# Download one annotation split using the release's fixed export format
+path = client.dataset_download("DATASET_ID", split_type="train")
+
+# Omit split_type to download all available splits as one bundle
+path = client.dataset_download("DATASET_ID")
 
 # Download raw files
 folder = client.dataset_download_files("DATASET_ID")
@@ -139,6 +152,10 @@ unitlab project members PROJECT_ID
 
 # Upload data to a project
 unitlab project upload PROJECT_ID --directory ./images
+
+# Upload PDFs or medical volumes with the same command
+unitlab project upload PROJECT_ID --directory ./pdfs
+unitlab project upload PROJECT_ID --directory ./medical
 ```
 
 ### Datasets
@@ -147,8 +164,11 @@ unitlab project upload PROJECT_ID --directory ./images
 # List datasets
 unitlab dataset list
 
-# Download annotations
-unitlab dataset download DATASET_ID --export-type COCO --split-type train
+# Download one annotation split using the release's fixed export format
+unitlab dataset download DATASET_ID --split-type train
+
+# Download all annotation splits as one bundle
+unitlab dataset download DATASET_ID
 
 # Download raw files
 unitlab dataset download DATASET_ID --download-type files

@@ -25,9 +25,12 @@ app.add_typer(dataset_app, name="dataset", help="Dataset commands")
 
 
 API_KEY = Annotated[
-    str,
+    str | None,
     typer.Option(
-        default_factory=_config.get_api_key, help="The api-key obtained from unitlab.ai"
+        help=(
+            "The api-key obtained from unitlab.ai. If omitted, reads "
+            "UNITLAB_API_KEY, then the configured key."
+        )
     ),
 ]
 
@@ -55,32 +58,32 @@ def configure(
     _config.write_config(api_key=api_key, api_url=api_url)
 
 
-def get_client(api_key: str) -> UnitlabClient:
+def get_client(api_key: str | None) -> UnitlabClient:
     return UnitlabClient(api_key=api_key)
 
 
 @project_app.command(name="list", help="Project list")
-def project_list(api_key: API_KEY):
+def project_list(api_key: API_KEY = None):
     typer.echo(get_client(api_key).projects(pretty=1))
 
 
 @project_app.command(name="detail", help="Project detail")
-def project_detail(pk: UUID, api_key: API_KEY):
+def project_detail(pk: UUID, api_key: API_KEY = None):
     typer.echo(get_client(api_key).project(project_id=pk, pretty=1))
 
 
 @project_app.command(help="Project members")
-def members(pk: UUID, api_key: API_KEY):
+def members(pk: UUID, api_key: API_KEY = None):
     typer.echo(get_client(api_key).project_members(project_id=pk, pretty=1))
 
 
 @project_app.command(help="Upload data")
 def upload(
     pk: UUID,
-    api_key: API_KEY,
     directory: Annotated[
         Path, typer.Option(help="Directory containing the data to be uploaded")
     ],
+    api_key: API_KEY = None,
     sentences_per_chunk: Annotated[
         int,
         typer.Option(help="Sentences per chunk for text projects"),
@@ -92,40 +95,40 @@ def upload(
         ),
     ] = 1.0,
 ):
-    get_client(api_key).project_upload_data(
+    result = get_client(api_key).project_upload_data(
         str(pk),
         directory=directory,
         sentences_per_chunk=sentences_per_chunk,
         fps=fps,
     )
+    typer.echo(f"Uploaded {result['uploaded']} of {result['total']} files")
 
 
 @dataset_app.command(name="list", help="List datasets")
-def dataset_list(api_key: API_KEY):
+def dataset_list(api_key: API_KEY = None):
     typer.echo(get_client(api_key).datasets(pretty=1))
 
 
 @dataset_app.command(name="download", help="Download dataset")
 def dataset_download(
     pk: UUID,
-    api_key: API_KEY,
     download_type: Annotated[
         DownloadType,
         typer.Option(help="Download type (annotation, files)"),
     ] = DownloadType.annotation,
-    export_type: Annotated[
-        str,
-        typer.Option(help="Export type (e.g. COCO, YOLOv8, YOLOv5, UUEF)"),
-    ] = "COCO",
+    api_key: API_KEY = None,
     split_type: Annotated[
         str | None,
         typer.Option(
-            help="Dataset split (e.g. train, validation). Auto-detected if omitted."
+            help=(
+                "Dataset split (e.g. train, validation). "
+                "If omitted, downloads all available splits."
+            )
         ),
     ] = None,
 ):
     if download_type == DownloadType.annotation:
-        get_client(api_key).dataset_download(str(pk), export_type, split_type)
+        get_client(api_key).dataset_download(str(pk), split_type=split_type)
     else:
         typer.echo(get_client(api_key).dataset_download_files(str(pk)))
 
