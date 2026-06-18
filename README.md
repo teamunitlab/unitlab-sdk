@@ -87,8 +87,6 @@ projects = client.projects()
 # Get project details
 project = client.project("PROJECT_ID")
 
-# Get project members
-members = client.project_members("PROJECT_ID")
 ```
 
 ### Upload data
@@ -107,9 +105,6 @@ the supported extensions: images, text, video, audio, medical
 Additional options for specific file types:
 
 ```python
-# Text files
-client.project_upload_data("PROJECT_ID", "./docs", sentences_per_chunk=10)
-
 # Video files
 client.project_upload_data("PROJECT_ID", "./videos", fps=30.0)
 
@@ -146,9 +141,6 @@ unitlab project list
 
 # Project details
 unitlab project detail PROJECT_ID
-
-# Project members
-unitlab project members PROJECT_ID
 
 # Upload data to a project
 unitlab project upload PROJECT_ID --directory ./images

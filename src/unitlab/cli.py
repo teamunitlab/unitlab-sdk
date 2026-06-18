@@ -72,11 +72,6 @@ def project_detail(pk: UUID, api_key: API_KEY = None):
     typer.echo(get_client(api_key).project(project_id=pk, pretty=1))
 
 
-@project_app.command(help="Project members")
-def members(pk: UUID, api_key: API_KEY = None):
-    typer.echo(get_client(api_key).project_members(project_id=pk, pretty=1))
-
-
 @project_app.command(help="Upload data")
 def upload(
     pk: UUID,
@@ -84,10 +79,6 @@ def upload(
         Path, typer.Option(help="Directory containing the data to be uploaded")
     ],
     api_key: API_KEY = None,
-    sentences_per_chunk: Annotated[
-        int,
-        typer.Option(help="Sentences per chunk for text projects"),
-    ] = 10,
     fps: Annotated[
         float,
         typer.Option(
@@ -98,7 +89,6 @@ def upload(
     result = get_client(api_key).project_upload_data(
         str(pk),
         directory=directory,
-        sentences_per_chunk=sentences_per_chunk,
         fps=fps,
     )
     typer.echo(f"Uploaded {result['uploaded']} of {result['total']} files")

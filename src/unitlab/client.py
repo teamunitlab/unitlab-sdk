@@ -197,9 +197,6 @@ class UnitlabClient:
     def project(self, project_id: str, pretty: int = 0) -> Any:
         return self._get(f"/api/sdk/projects/{project_id}/?pretty={pretty}")
 
-    def project_members(self, project_id: str, pretty: int = 0) -> Any:
-        return self._get(f"/api/sdk/projects/{project_id}/members/?pretty={pretty}")
-
     def project_upload_info(self, project_id: str) -> Any:
         return self._get(f"/api/sdk/projects/{project_id}/upload-info/")
 
@@ -248,8 +245,7 @@ class UnitlabClient:
         project_id: str,
         directory: str | Path,
         batch_size: int = 100,
-        sentences_per_chunk: int = 10,
-        fps: float = 1.0,
+        fps: float = 1.0,  # Applies only to video files.
     ) -> dict[str, int]:
         directory = str(directory)
         if not os.path.isdir(directory):
@@ -338,9 +334,7 @@ class UnitlabClient:
                     or project_generic_type
                 )
                 extra_data: dict[str, str] = {}
-                if file_generic_type == "text":
-                    extra_data["sentences_per_chunk"] = str(sentences_per_chunk)
-                elif file_generic_type == "video":
+                if file_generic_type == "video":
                     extra_data["fps"] = str(fps)
                 elif file_generic_type == "medical":
                     extra_data["session_id"] = medical_session_id
@@ -442,7 +436,7 @@ class UnitlabClient:
         return asyncio.run(main())
 
     def datasets(self, pretty: int = 0) -> Any:
-        return self._get(f"/api/sdk/datasets/?pretty={pretty}")
+        return self._get(f"/api/sdk/releases/?pretty={pretty}")
 
     def dataset_download(
         self,
@@ -456,7 +450,7 @@ class UnitlabClient:
         if split_type is not None:
             data["split_type"] = split_type
 
-        response = self._post(f"/api/sdk/datasets/{dataset_id}/", data=data)
+        response = self._post(f"/api/sdk/releases/{dataset_id}/", data=data)
 
         file_url = response["file"]
         try:
@@ -484,7 +478,7 @@ class UnitlabClient:
             Path to the download folder.
         """
         response = self._post(
-            f"/api/sdk/datasets/{dataset_id}/", data={"download_type": "files"}
+            f"/api/sdk/releases/{dataset_id}/", data={"download_type": "files"}
         )
         base_folder = str(dataset_id)
         os.makedirs(base_folder, exist_ok=True)
