@@ -313,9 +313,9 @@ class UnitlabClient:
         num_batches = (num_files + batch_size - 1) // batch_size
         semaphore = asyncio.Semaphore(_UPLOAD_CONCURRENCY)
 
-        # Medical files in the same upload run share one session; non-medical
-        # files are sent without it.
-        medical_session_id = str(uuid.uuid4())
+        # Files in the same upload run share one project upload session. Medical
+        # finalization uses the same id for its series-level grouping.
+        upload_session_id = str(uuid.uuid4())
 
         # Finalization is only relevant when this batch includes medical files.
         has_medical_files = any(
@@ -336,8 +336,7 @@ class UnitlabClient:
                 extra_data: dict[str, str] = {}
                 if file_generic_type == "video":
                     extra_data["fps"] = str(fps)
-                elif file_generic_type == "medical":
-                    extra_data["session_id"] = medical_session_id
+                extra_data["session_id"] = upload_session_id
 
                 try:
                     with open(file, "rb") as f:
@@ -398,7 +397,7 @@ class UnitlabClient:
                         try:
                             response = await client.post(
                                 f"/api/sdk/projects/{project_id}/"
-                                f"medical-upload-sessions/{medical_session_id}/finalize/",
+                                f"medical-upload-sessions/{upload_session_id}/finalize/",
                             )
                             response.raise_for_status()
                             logger.info("Medical session finalized")
