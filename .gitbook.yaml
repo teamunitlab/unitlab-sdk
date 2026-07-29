@@ -1,0 +1,5 @@
+root: ./gitbook-import/documentation/
+
+structure:
+  readme: README.md
+  summary: SUMMARY.md
