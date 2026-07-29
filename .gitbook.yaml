@@ -1,4 +1,4 @@
-root: ./gitbook-import/documentation/
+root: ./gitbook-import/solutions/
 
 structure:
   readme: README.md
