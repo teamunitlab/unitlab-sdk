@@ -344,9 +344,13 @@ release = client.releases.create(
 releases = client.releases.list()
 release = client.releases.get(release.id)
 
-annotation_path = release.download(split="train")
+annotation_path = release.download(split="train", dest="./release-annotations")
 files_folder = release.download_files(dest="./release-files")
 ```
+
+Release item download tokens are persistent Unitlab URLs. For files stored in
+customer cloud storage, the URL redirects to a signed target URL; only that target
+URL is temporary.
 
 ## CLI quick reference
 
@@ -407,7 +411,7 @@ unitlab dataset versions DATASET_ID
 unitlab release create PROJECT_ID --format UUEF --splits train=100
 unitlab release list
 unitlab release detail RELEASE_ID
-unitlab release download RELEASE_ID --split-type train
+unitlab release download RELEASE_ID --split-type train --dest ./release-annotations
 
 # Ontologies
 unitlab ontology list

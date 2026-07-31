@@ -15,32 +15,45 @@ from .exceptions import NetworkError
 DOWNLOAD_CONCURRENCY = 50
 
 
-def download_annotation(api, release_id: str, split: str | None = None) -> str:
+def download_annotation(
+    api,
+    release_id: str,
+    split: str | None = None,
+    dest: str | Path | None = None,
+) -> str:
     payload = {"download_type": "annotation"}
     if split is not None:
         payload["split_type"] = split
-    response = api.post(f"/api/sdk/releases/{release_id}/", json=payload)
+    response = api.post(
+        f"/api/sdk/releases/{release_id}/",
+        json=payload,
+        timeout=600.0,
+    )
     file_url = response["file"]
     filename = os.path.basename(urlparse(file_url).path) or f"{release_id}.zip"
-    partial = f"{filename}.part"
+    destination = Path(dest) if dest is not None else Path()
+    target = destination / filename
+    partial = target.with_name(f"{target.name}.part")
     try:
+        destination.mkdir(parents=True, exist_ok=True)
         with httpx.stream("GET", file_url, timeout=300.0) as stream:
             stream.raise_for_status()
-            with open(partial, "wb") as handle:
+            with partial.open("wb") as handle:
                 for chunk in stream.iter_bytes():
                     handle.write(chunk)
-        os.replace(partial, filename)
+        os.replace(partial, target)
     except (httpx.HTTPError, OSError) as exc:
-        if os.path.exists(partial):
-            os.remove(partial)
+        if partial.exists():
+            partial.unlink()
         raise NetworkError(f"Failed to download release: {exc}", exc) from exc
-    return os.path.abspath(filename)
+    return str(target.resolve())
 
 
 def download_files(api, release_id: str, dest: str | Path | None = None) -> str:
     response = api.post(
         f"/api/sdk/releases/{release_id}/",
         json={"download_type": "files"},
+        timeout=600.0,
     )
     base_folder = str(Path(dest) if dest is not None else Path(release_id))
     os.makedirs(base_folder, exist_ok=True)

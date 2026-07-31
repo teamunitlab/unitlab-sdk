@@ -1,10 +1,11 @@
 import asyncio
+from contextlib import contextmanager
 
 import httpx
 import pytest
 
 from unitlab import NetworkError
-from unitlab._downloader import download_files
+from unitlab._downloader import download_annotation, download_files
 
 
 class BrokenStream(httpx.AsyncByteStream):
@@ -13,13 +14,68 @@ class BrokenStream(httpx.AsyncByteStream):
         raise httpx.ReadError("connection lost")
 
 
+def test_annotation_download_uses_destination_and_long_manifest_timeout(
+    monkeypatch,
+    tmp_path,
+):
+    posts = []
+    streams = []
+    file_url = "https://files.test/release-train.zip?signature=temporary"
+
+    class Api:
+        @staticmethod
+        def post(*args, **kwargs):
+            posts.append((args, kwargs))
+            return {"file": file_url}
+
+    response = httpx.Response(
+        200,
+        content=b"archive",
+        request=httpx.Request("GET", file_url),
+    )
+
+    @contextmanager
+    def stream(*args, **kwargs):
+        streams.append((args, kwargs))
+        yield response
+
+    monkeypatch.setattr(
+        "unitlab._downloader.httpx.stream",
+        stream,
+    )
+    destination = tmp_path / "annotations"
+
+    result = download_annotation(Api(), "release-1", "train", destination)
+
+    final = destination / "release-train.zip"
+    assert result == str(final.resolve())
+    assert final.read_bytes() == b"archive"
+    assert not (destination / "release-train.zip.part").exists()
+    assert streams == [(("GET", file_url), {"timeout": 300.0})]
+    assert posts == [
+        (
+            ("/api/sdk/releases/release-1/",),
+            {
+                "json": {
+                    "download_type": "annotation",
+                    "split_type": "train",
+                },
+                "timeout": 600.0,
+            },
+        )
+    ]
+
+
 def test_failed_download_does_not_leave_a_file_that_next_run_skips(
     monkeypatch,
     tmp_path,
 ):
+    posts = []
+
     class Api:
         @staticmethod
-        def post(*_args, **_kwargs):
+        def post(*args, **kwargs):
+            posts.append((args, kwargs))
             return [
                 {
                     "file_name": "images/scan.png",
@@ -56,6 +112,7 @@ def test_failed_download_does_not_leave_a_file_that_next_run_skips(
 
     download_files(Api(), "release-1", destination)
     assert final.read_bytes() == b"complete"
+    assert all(kwargs["timeout"] == 600.0 for _args, kwargs in posts)
 
 
 def test_download_files_works_inside_a_running_event_loop(monkeypatch, tmp_path):

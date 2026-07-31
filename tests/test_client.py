@@ -278,14 +278,15 @@ def test_release_detail_parses_and_downloads(monkeypatch):
 
     monkeypatch.setattr(
         "unitlab.resources.releases._downloader.download_annotation",
-        lambda api, release_id, split: f"{release_id}-{split}.zip",
+        lambda api, release_id, split, dest: f"{dest}/{release_id}-{split}.zip",
     )
-    assert release.download("train") == "r1-train.zip"
+    assert release.download("train", dest="exports") == "exports/r1-train.zip"
     client.close()
 
 
 def test_multimodal_release_uses_all_available_types():
     def handler(request):
+        assert set(request.extensions["timeout"].values()) == {600.0}
         payload = json.loads(request.content)
         assert "generic_types" not in payload
         return httpx.Response(

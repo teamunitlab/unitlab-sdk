@@ -53,17 +53,21 @@ def test_forbidden_responses_distinguish_permission_and_subscription_errors():
     assert exc.value.code == ""
 
 
-def test_commercial_error_code_is_preserved():
+@pytest.mark.parametrize(
+    "code",
+    ["workspace_read_only", "workspace_license_required"],
+)
+def test_commercial_error_code_is_preserved(code):
     response = httpx.Response(
         403,
         request=httpx.Request("POST", "http://testserver/action"),
         json={
             "detail": "Workspace is read-only.",
-            "code": "workspace_read_only",
+            "code": code,
         },
     )
 
     with pytest.raises(SubscriptionError) as exc:
         raise_for_response(response)
 
-    assert exc.value.code == "workspace_read_only"
+    assert exc.value.code == code

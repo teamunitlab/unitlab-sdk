@@ -1210,12 +1210,15 @@ def release_download(
     pk: UUID,
     download_type: DownloadType = typer.Option(DownloadType.annotation),
     split_type: str | None = typer.Option(None),
-    dest: Path | None = typer.Option(None),
+    dest: Path | None = typer.Option(
+        None,
+        help="Destination directory for annotations or source files.",
+    ),
     api_key: API_KEY = None,
 ):
     release = get_client(api_key).releases.get(str(pk))
     result = (
-        release.download(split_type)
+        release.download(split_type, dest=dest)
         if download_type == DownloadType.annotation
         else release.download_files(dest=dest)
     )
@@ -1237,7 +1240,13 @@ def release_create(
     export_type: str = typer.Option("UUEF", "--format"),
     splits: str = typer.Option("train=100"),
     data_type: list[str] | None = typer.Option(None, "--data-type"),
-    include_download_tokens: bool = typer.Option(False),
+    include_download_tokens: bool = typer.Option(
+        False,
+        help=(
+            "Include persistent Unitlab item download tokens; only a "
+            "customer-cloud signed target URL is temporary."
+        ),
+    ),
     license_id: UUID | None = typer.Option(None, "--license"),
     api_key: API_KEY = None,
     json_output: JSON_OUTPUT = False,

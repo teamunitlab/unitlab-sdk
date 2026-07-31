@@ -39,7 +39,9 @@ class ReleasesNamespace(Namespace):
             project: Project handle or ID.
             export_type: Primary annotation export format.
             split_ratios: Percentage assigned to each output split.
-            include_download_tokens: Include temporary download tokens.
+            include_download_tokens: Include persistent Unitlab item download tokens.
+                The Unitlab token URL remains valid; a customer-cloud signed
+                target URL returned by it is temporary.
             upload_sessions: Optional Batch Queue handles or IDs to include.
             data_types: Optional public data types to include. ``multimodal``
                 includes every available concrete type.
@@ -83,6 +85,7 @@ class ReleasesNamespace(Namespace):
         raw = self._api.post(
             f"/api/sdk/projects/{identifier(project)}/releases/",
             json=payload,
+            timeout=600.0,
         )
         return Release._from_raw(self._client, raw)
 
@@ -116,16 +119,27 @@ class Release:
             is_public=bool(raw.get("is_public", False)),
         )
 
-    def download(self, split: str | None = None) -> str:
+    def download(
+        self,
+        split: str | None = None,
+        *,
+        dest: str | Path | None = None,
+    ) -> str:
         """Download annotations for one split or the combined Release.
 
         Args:
             split: Optional split name such as ``train`` or ``test``.
+            dest: Destination directory; defaults to the current directory.
 
         Returns:
             Absolute path to the downloaded archive.
         """
-        return _downloader.download_annotation(self._client._api, self.id, split)
+        return _downloader.download_annotation(
+            self._client._api,
+            self.id,
+            split,
+            dest,
+        )
 
     def download_files(self, dest: str | Path | None = None) -> str:
         """Download the source files represented by this Release.

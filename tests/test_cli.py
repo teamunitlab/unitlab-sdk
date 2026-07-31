@@ -546,6 +546,41 @@ def test_folder_list_defaults_to_all_and_parent_scopes(monkeypatch):
     assert "folder" not in assets_help.stdout.lower()
 
 
+def test_release_annotation_download_passes_destination(monkeypatch, tmp_path):
+    calls = []
+
+    class Release:
+        @staticmethod
+        def download(split, *, dest):
+            calls.append((split, dest))
+            return str(dest / "release.zip")
+
+    releases = SimpleNamespace(get=lambda _release_id: Release())
+    monkeypatch.setattr(
+        "unitlab.cli.get_client",
+        lambda _api_key: SimpleNamespace(releases=releases),
+    )
+    release_id = "00000000-0000-0000-0000-000000000001"
+    destination = tmp_path / "annotations"
+
+    result = runner.invoke(
+        app,
+        [
+            "release",
+            "download",
+            release_id,
+            "--split-type",
+            "train",
+            "--dest",
+            str(destination),
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert calls == [("train", destination)]
+    assert result.stdout.strip() == str(destination / "release.zip")
+
+
 def test_console_entrypoint_prints_concise_sdk_errors(monkeypatch, capsys):
     def fail():
         raise UnitlabError("Actionable failure")
