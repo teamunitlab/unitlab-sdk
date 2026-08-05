@@ -99,14 +99,10 @@ class Release:
     raw: dict[str, Any] = field(repr=False)
     _client: UnitlabClient = field(repr=False, compare=False)
     data_type: str = ""
-    download_formats: list[str] = field(default_factory=list)
     is_public: bool = False
 
     @classmethod
     def _from_raw(cls, client: UnitlabClient, raw: dict[str, Any]) -> Release:
-        formats = raw.get("download_formats") or []
-        if isinstance(formats, str):
-            formats = [value.strip() for value in formats.split(",") if value.strip()]
         return cls(
             id=str(raw["pk"]),
             name=str(raw.get("name", "")),
@@ -115,7 +111,6 @@ class Release:
             raw=raw,
             _client=client,
             data_type=_data_type_name(raw.get("generic_type")),
-            download_formats=[str(value) for value in formats],
             is_public=bool(raw.get("is_public", False)),
         )
 

@@ -263,7 +263,6 @@ def test_release_detail_parses_and_downloads(monkeypatch):
                 "version": "1.0",
                 "number_of_data": 3,
                 "generic_type": None,
-                "download_formats": "COCO, JSONL",
                 "is_public": True,
             },
         )
@@ -273,7 +272,7 @@ def test_release_detail_parses_and_downloads(monkeypatch):
     assert release.id == "r1"
     assert release.data_item_count == 3
     assert release.data_type == ""
-    assert release.download_formats == ["COCO", "JSONL"]
+    assert not hasattr(release, "download_formats")
     assert release.is_public
 
     monkeypatch.setattr(

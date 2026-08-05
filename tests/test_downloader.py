@@ -148,3 +148,31 @@ def test_download_files_works_inside_a_running_event_loop(monkeypatch, tmp_path)
 
     assert asyncio.run(run()) == str(destination)
     assert (destination / "scan.png").read_bytes() == b"complete"
+
+
+def test_download_files_preserves_server_group_and_collision_paths(tmp_path):
+    class Api:
+        @staticmethod
+        def post(*_args, **_kwargs):
+            return [
+                {
+                    "file_name": "group-1/front/scan.txt",
+                    "content": "front",
+                },
+                {
+                    "file_name": "row-a/duplicate.txt",
+                    "content": "a",
+                },
+                {
+                    "file_name": "row-b/duplicate.txt",
+                    "content": "b",
+                },
+            ]
+
+    destination = tmp_path / "release"
+
+    download_files(Api(), "release-1", destination)
+
+    assert (destination / "group-1" / "front" / "scan.txt").read_text() == "front"
+    assert (destination / "row-a" / "duplicate.txt").read_text() == "a"
+    assert (destination / "row-b" / "duplicate.txt").read_text() == "b"
