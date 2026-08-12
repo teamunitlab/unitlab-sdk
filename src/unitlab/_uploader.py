@@ -4,6 +4,7 @@ import asyncio
 import json
 import uuid
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import suppress
 from pathlib import Path
 from typing import Any
 
@@ -11,12 +12,46 @@ import httpx
 import tqdm
 
 from ._http import _extract_error_message, raise_for_response
-from .exceptions import NetworkError, SubscriptionError
+from .exceptions import (
+    AmbiguousUploadCompletionError,
+    NetworkError,
+    SubscriptionError,
+)
 from .types import UploadFailure, UploadResult
 
 UPLOAD_CONCURRENCY = 20
 RETRY_COUNT = 3
 RETRY_DELAY_SECONDS = 5
+TILED_PART_CONCURRENCY = 3
+TILED_PART_MAX_ATTEMPTS = 3
+TILED_PART_RETRY_DELAY_SECONDS = 2
+TILED_MULTIPART_MIN_TIFF_BYTES = 8 * 1024 * 1024
+AMBIGUOUS_TIFF_EXTENSIONS = {"tif", "tiff"}
+GEOSPATIAL_TILED_EXTENSIONS = {
+    "jp2",
+    "cog",
+    "geotiff",
+    "gtif",
+    "gtiff",
+    "img",
+    "ntf",
+    "nitf",
+}
+# BIF and AVS require the backend's OpenSlide 4.0.1+ image contract.
+PATHOLOGY_TILED_EXTENSIONS = {
+    "svs",
+    "avs",
+    "ndpi",
+    "scn",
+    "bif",
+    "svslide",
+    "tf2",
+    "tf8",
+    "btf",
+}
+TILED_EXTENSIONS = (
+    AMBIGUOUS_TIFF_EXTENSIONS | GEOSPATIAL_TILED_EXTENSIONS | PATHOLOGY_TILED_EXTENSIONS
+)
 
 EXTENSIONS_BY_GENERIC_TYPE: dict[str, set[str]] = {
     "img": {"jpg", "png", "jpeg", "webp", "gif", "bmp", "ico", "svg"},
@@ -25,6 +60,8 @@ EXTENSIONS_BY_GENERIC_TYPE: dict[str, set[str]] = {
     "audio": {"mp3", "wav", "ogg", "aac", "flac", "m4a"},
     "medical": {"dcm", "nii", "nii.gz", "nrrd"},
     "document": {"pdf"},
+    "geospatial": AMBIGUOUS_TIFF_EXTENSIONS | GEOSPATIAL_TILED_EXTENSIONS,
+    "pathology": PATHOLOGY_TILED_EXTENSIONS,
 }
 
 
@@ -37,6 +74,8 @@ def extension_for_filename(filename: str) -> str:
 
 def detect_generic_type(filename: str) -> str | None:
     extension = extension_for_filename(filename)
+    if extension in AMBIGUOUS_TIFF_EXTENSIONS:
+        return None
     for generic_type, extensions in EXTENSIONS_BY_GENERIC_TYPE.items():
         if extension in extensions:
             return generic_type
@@ -94,6 +133,240 @@ async def _post_file(
         return None, str(exc)
     except ValueError:
         return None, "Unexpected response format"
+
+
+class _FallbackToSimpleUploadError(Exception):
+    pass
+
+
+class _TiledUploadRejectedError(Exception):
+    pass
+
+
+class _FilePartStream(httpx.AsyncByteStream):
+    def __init__(self, path: Path, start: int, size: int):
+        self.path = path
+        self.start = start
+        self.size = size
+
+    async def __aiter__(self):
+        remaining = self.size
+        with self.path.open("rb") as handle:
+            handle.seek(self.start)
+            while remaining:
+                chunk = handle.read(min(1024 * 1024, remaining))
+                if not chunk:
+                    raise OSError(f"Unexpected end of file: {self.path}")
+                remaining -= len(chunk)
+                yield chunk
+
+
+def _response_json(response: httpx.Response) -> dict[str, Any]:
+    try:
+        payload = response.json()
+    except ValueError as exc:
+        raise NetworkError("Unexpected response format", exc) from exc
+    if not isinstance(payload, dict):
+        raise NetworkError("Unexpected response format")
+    return payload
+
+
+def _can_fallback_from_initiate(response: httpx.Response) -> bool:
+    if response.status_code == 404:
+        return True
+    return not response.is_success and (
+        "direct_upload_unavailable" in _extract_error_message(response)
+    )
+
+
+def _should_use_tiled_multipart(path: Path) -> bool:
+    extension = extension_for_filename(path.name)
+    if extension not in TILED_EXTENSIONS:
+        return False
+    return extension not in AMBIGUOUS_TIFF_EXTENSIONS or (
+        path.stat().st_size > TILED_MULTIPART_MIN_TIFF_BYTES
+    )
+
+
+async def _put_tiled_part(
+    client: httpx.AsyncClient,
+    semaphore: asyncio.Semaphore,
+    path: Path,
+    *,
+    url: str,
+    start: int,
+    size: int,
+) -> str:
+    last_error: Exception | None = None
+    for attempt in range(TILED_PART_MAX_ATTEMPTS):
+        try:
+            async with semaphore:
+                response = await client.put(
+                    url,
+                    content=_FilePartStream(path, start, size),
+                    headers={"Content-Length": str(size)},
+                )
+            response.raise_for_status()
+            etag = response.headers.get("etag")
+            if not etag:
+                raise NetworkError("Part upload returned no ETag.")
+            return etag.strip('"')
+        except (httpx.HTTPError, OSError, NetworkError) as exc:
+            last_error = exc
+            if attempt + 1 < TILED_PART_MAX_ATTEMPTS:
+                await asyncio.sleep(TILED_PART_RETRY_DELAY_SECONDS * (attempt + 1))
+    raise NetworkError(f"Multipart part upload failed: {last_error}", last_error)
+
+
+async def _abort_tiled_upload(
+    client: httpx.AsyncClient,
+    endpoint: str,
+    upload_token: str,
+) -> None:
+    with suppress(httpx.HTTPError, httpx.TimeoutException):
+        await client.post(f"{endpoint}/abort/", json={"upload_token": upload_token})
+
+
+async def _upload_tiled_file(
+    api_client: httpx.AsyncClient,
+    storage_client: httpx.AsyncClient,
+    part_semaphore: asyncio.Semaphore,
+    endpoint: str,
+    path: Path,
+    *,
+    session_id: str | None = None,
+    complete_fields: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    file_size = path.stat().st_size
+    initiate = {
+        "file_name": path.name,
+        "file_size": file_size,
+    }
+    if session_id:
+        initiate["session_id"] = session_id
+    try:
+        response = await api_client.post(f"{endpoint}/initiate/", json=initiate)
+    except (httpx.HTTPError, httpx.TimeoutException) as exc:
+        raise _TiledUploadRejectedError(str(exc)) from exc
+    if _can_fallback_from_initiate(response):
+        raise _FallbackToSimpleUploadError(_extract_error_message(response))
+    if response.status_code in (401, 403):
+        raise_for_response(response)
+    if response.status_code >= 400:
+        raise _TiledUploadRejectedError(_extract_error_message(response))
+    initiated = _response_json(response)
+    upload_token = str(initiated.get("upload_token") or "")
+    try:
+        part_size = int(initiated["part_size"])
+        part_urls = list(initiated["part_urls"])
+        if not upload_token or part_size < 1 or not part_urls:
+            raise ValueError("missing multipart fields")
+        part_urls.sort(key=lambda part: int(part["part_number"]))
+        if [int(part["part_number"]) for part in part_urls] != list(
+            range(1, len(part_urls) + 1)
+        ):
+            raise ValueError("invalid multipart part numbers")
+        if len(part_urls) != max(1, (file_size + part_size - 1) // part_size) or any(
+            not part.get("url") for part in part_urls
+        ):
+            raise ValueError("invalid multipart part URLs")
+        part_tasks = [
+            asyncio.create_task(
+                _put_tiled_part(
+                    storage_client,
+                    part_semaphore,
+                    path,
+                    url=str(part["url"]),
+                    start=(int(part["part_number"]) - 1) * part_size,
+                    size=min(
+                        part_size,
+                        file_size - (int(part["part_number"]) - 1) * part_size,
+                    ),
+                )
+            )
+            for part in part_urls
+        ]
+        try:
+            parts = await asyncio.gather(*part_tasks)
+        except Exception:
+            for task in part_tasks:
+                task.cancel()
+            await asyncio.gather(*part_tasks, return_exceptions=True)
+            raise
+    except (KeyError, TypeError, ValueError, NetworkError) as exc:
+        if upload_token:
+            await _abort_tiled_upload(api_client, endpoint, upload_token)
+        if isinstance(exc, NetworkError):
+            raise
+        raise NetworkError(
+            f"Invalid multipart initiation response: {exc}", exc
+        ) from exc
+
+    completion = {
+        "upload_token": upload_token,
+        "parts": [
+            {"part_number": int(part["part_number"]), "etag": etag}
+            for part, etag in zip(part_urls, parts, strict=True)
+        ],
+        **(complete_fields or {}),
+    }
+    try:
+        response = await api_client.post(f"{endpoint}/complete/", json=completion)
+        raise_for_response(response)
+        return _response_json(response)
+    except Exception as exc:
+        raise AmbiguousUploadCompletionError(
+            "The upload finished but its confirmation was lost. Check the data "
+            "list before re-uploading; the file may already be processing.",
+            exc,
+        ) from exc
+
+
+async def _upload_file(
+    api_client: httpx.AsyncClient,
+    storage_client: httpx.AsyncClient,
+    part_semaphore: asyncio.Semaphore,
+    path: Path,
+    *,
+    simple_endpoint: str,
+    simple_data: dict[str, Any],
+    tiled_endpoint: str,
+    session_id: str | None = None,
+    complete_fields: dict[str, Any] | None = None,
+) -> tuple[dict[str, Any] | None, str | None]:
+    if _should_use_tiled_multipart(path):
+        try:
+            return (
+                await _upload_tiled_file(
+                    api_client,
+                    storage_client,
+                    part_semaphore,
+                    tiled_endpoint,
+                    path,
+                    session_id=session_id,
+                    complete_fields=complete_fields,
+                ),
+                None,
+            )
+        except _FallbackToSimpleUploadError:
+            pass
+        except _TiledUploadRejectedError as exc:
+            return None, str(exc)
+    return await _post_file(
+        api_client,
+        simple_endpoint,
+        path,
+        data=simple_data,
+    )
+
+
+async def _gather_uploads(tasks):
+    """Let every started file settle before surfacing an uncertain completion."""
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+    for result in results:
+        if isinstance(result, Exception):
+            raise result
+    return results
 
 
 async def _finalize_medical_upload(client, endpoint: str, batch_queue_id: str) -> None:
@@ -168,10 +441,15 @@ async def _upload_project_async(
     failures: list[UploadFailure] = []
     responses: list[dict[str, Any]] = []
     successful_medical = False
+    batch_error: Exception | None = None
     chunk_size = max(1, min(UPLOAD_CONCURRENCY, batch_size))
     progress = tqdm.tqdm(total=len(files), ncols=80, disable=not show_progress)
     try:
-        async with api.async_client() as client:
+        part_semaphore = asyncio.Semaphore(TILED_PART_CONCURRENCY)
+        async with (
+            api.async_client() as client,
+            httpx.AsyncClient(timeout=600.0) as storage_client,
+        ):
             for start in range(0, len(files), chunk_size):
                 chunk = files[start : start + chunk_size]
                 tasks = []
@@ -183,18 +461,30 @@ async def _upload_project_async(
                     if generic_type == "video":
                         fields["fps"] = str(fps)
                     tasks.append(
-                        _post_file(
+                        _upload_file(
                             client,
-                            f"/api/sdk/projects/{project_id}/upload-data/",
+                            storage_client,
+                            part_semaphore,
                             path,
-                            data=fields,
+                            simple_endpoint=(
+                                f"/api/sdk/projects/{project_id}/upload-data/"
+                            ),
+                            simple_data=fields,
+                            tiled_endpoint=(
+                                f"/api/sdk/projects/{project_id}/tiled-uploads"
+                            ),
+                            session_id=session_id,
                         )
                     )
-                results = await asyncio.gather(*tasks)
-                for path, generic_type, (payload, error) in zip(
+                results = await asyncio.gather(*tasks, return_exceptions=True)
+                for path, generic_type, result in zip(
                     chunk, generic_types, results, strict=True
                 ):
                     progress.update(1)
+                    if isinstance(result, Exception):
+                        batch_error = batch_error or result
+                        continue
+                    payload, error = result
                     if error:
                         failures.append(UploadFailure(path, error))
                         continue
@@ -213,6 +503,8 @@ async def _upload_project_async(
                     responses.append(payload)
                     if generic_type == "medical" and payload.get("datasource_id"):
                         successful_medical = True
+                if batch_error:
+                    break
             if successful_medical:
                 await _finalize_medical_upload(
                     client,
@@ -220,6 +512,8 @@ async def _upload_project_async(
                     f"{session_id}/finalize/",
                     session_id,
                 )
+            if batch_error:
+                raise batch_error
     finally:
         progress.close()
     result = UploadResult(
@@ -301,6 +595,42 @@ def _asset_form_data(
     return fields
 
 
+def _asset_complete_data(
+    *,
+    folder: str | None,
+    folder_id: str | None,
+    path: str | None,
+    tags: list[str] | None,
+    custom_metadata: dict[str, Any] | None,
+) -> dict[str, Any]:
+    return {
+        key: value
+        for key, value in {
+            "folder_name": folder,
+            "folder_id": folder_id,
+            "path": path,
+            "tags": tags,
+            "custom_metadata": custom_metadata,
+        }.items()
+        if value is not None
+    }
+
+
+def _asset_response_error(
+    payload: Any, expected_folder_id: str | None = None
+) -> str | None:
+    if not isinstance(payload, dict):
+        return "Unexpected response format"
+    folder_id = payload.get("folder_id")
+    if not folder_id:
+        return "Unexpected response: missing folder_id"
+    if expected_folder_id and str(folder_id) != expected_folder_id:
+        return "Unexpected response: wrong folder_id"
+    if not isinstance(payload.get("asset"), dict):
+        return "Unexpected response: missing asset"
+    return None
+
+
 async def _upload_assets_async(
     api,
     files: list[Path],
@@ -318,15 +648,29 @@ async def _upload_assets_async(
     resolved_folder_name = folder or ""
     progress = tqdm.tqdm(total=len(files), ncols=80, disable=not show_progress)
     try:
-        async with api.async_client() as client:
+        part_semaphore = asyncio.Semaphore(TILED_PART_CONCURRENCY)
+        async with (
+            api.async_client() as client,
+            httpx.AsyncClient(timeout=600.0) as storage_client,
+        ):
             remaining = list(files)
             while remaining and not resolved_folder_id:
                 first = remaining.pop(0)
-                payload, error = await _post_file(
+                payload, error = await _upload_file(
                     client,
-                    "/api/sdk/data-assets/upload/",
+                    storage_client,
+                    part_semaphore,
                     first,
-                    data=_asset_form_data(
+                    simple_endpoint="/api/sdk/data-assets/upload/",
+                    simple_data=_asset_form_data(
+                        folder=folder,
+                        folder_id=None,
+                        path=path,
+                        tags=tags,
+                        custom_metadata=custom_metadata,
+                    ),
+                    tiled_endpoint="/api/sdk/data-assets/tiled-uploads",
+                    complete_fields=_asset_complete_data(
                         folder=folder,
                         folder_id=None,
                         path=path,
@@ -339,10 +683,9 @@ async def _upload_assets_async(
                     failures.append(UploadFailure(first, error))
                     continue
                 payload = payload or {}
-                if not isinstance(payload, dict) or not payload.get("folder_id"):
-                    failures.append(
-                        UploadFailure(first, "Unexpected response: missing folder_id")
-                    )
+                response_error = _asset_response_error(payload)
+                if response_error:
+                    failures.append(UploadFailure(first, response_error))
                     continue
                 responses.append(payload)
                 resolved_folder_id = str(payload["folder_id"])
@@ -350,34 +693,52 @@ async def _upload_assets_async(
 
             for start in range(0, len(remaining), UPLOAD_CONCURRENCY):
                 chunk = remaining[start : start + UPLOAD_CONCURRENCY]
-                tasks = [
-                    _post_file(
-                        client,
-                        "/api/sdk/data-assets/upload/",
-                        file_path,
-                        data=_asset_form_data(
-                            folder=None,
-                            folder_id=resolved_folder_id,
-                            path=path,
-                            tags=tags,
-                            custom_metadata=custom_metadata,
-                        ),
+                tasks = []
+                for file_path in chunk:
+                    tasks.append(
+                        _upload_file(
+                            client,
+                            storage_client,
+                            part_semaphore,
+                            file_path,
+                            simple_endpoint="/api/sdk/data-assets/upload/",
+                            simple_data=_asset_form_data(
+                                folder=None,
+                                folder_id=resolved_folder_id,
+                                path=path,
+                                tags=tags,
+                                custom_metadata=custom_metadata,
+                            ),
+                            tiled_endpoint="/api/sdk/data-assets/tiled-uploads",
+                            complete_fields=_asset_complete_data(
+                                folder=None,
+                                folder_id=resolved_folder_id,
+                                path=path,
+                                tags=tags,
+                                custom_metadata=custom_metadata,
+                            ),
+                        )
                     )
-                    for file_path in chunk
-                ]
                 for file_path, (payload, error) in zip(
-                    chunk, await asyncio.gather(*tasks), strict=True
+                    chunk, await _gather_uploads(tasks), strict=True
                 ):
                     progress.update(1)
                     if error:
                         failures.append(UploadFailure(file_path, error))
                     else:
-                        responses.append(payload or {})
+                        payload = payload or {}
+                        response_error = _asset_response_error(
+                            payload, resolved_folder_id
+                        )
+                        if response_error:
+                            failures.append(UploadFailure(file_path, response_error))
+                        else:
+                            responses.append(payload)
     finally:
         progress.close()
     result = UploadResult(
         total=len(files),
-        uploaded=len(files) - len(failures),
+        uploaded=len(responses),
         failed=failures,
         responses=responses,
     )

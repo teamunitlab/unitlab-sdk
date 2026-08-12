@@ -398,6 +398,38 @@ def test_asset_upload_reports_missing_folder_id_instead_of_crashing(tmp_path):
     client.close()
 
 
+def test_asset_upload_rejects_later_response_without_asset(tmp_path):
+    def handler(request):
+        if b"bad.png" in request.content:
+            return httpx.Response(201, json={"folder_id": "folder-1"})
+        return httpx.Response(
+            201,
+            json={
+                "folder_id": "folder-1",
+                "folder_name": "Raw data",
+                "asset": {
+                    "pk": "asset-1",
+                    "file_name": "good.png",
+                    "generic_type": "img",
+                    "folder_id": "folder-1",
+                },
+            },
+        )
+
+    (tmp_path / "bad.png").write_bytes(b"bad")
+    (tmp_path / "good.png").write_bytes(b"good")
+    client = configured_client(handler)
+
+    result = client.assets.upload(tmp_path, folder_id="folder-1")
+
+    assert result.uploaded == 1
+    assert [asset.file_name for asset in result.assets] == ["good.png"]
+    assert [failure.error for failure in result.failed] == [
+        "Unexpected response: missing asset"
+    ]
+    client.close()
+
+
 def test_waiter_and_grouping_template(monkeypatch, capsys):
     polls = 0
 

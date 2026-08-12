@@ -48,8 +48,12 @@ RequestTimeoutError = TimeoutError
 
 
 class ProcessingTimeoutError(TimeoutError):
-    """Raised when a Batch Queue is still processing at the deadline."""
+    """Raised when server-side processing is still running at the deadline."""
 
     def __init__(self, message: str, status=None, detail: Exception | None = None):
         super().__init__(message, detail)
         self.status = status
+
+
+class AmbiguousUploadCompletionError(NetworkError):
+    """Raised when multipart completion may have succeeded server-side."""

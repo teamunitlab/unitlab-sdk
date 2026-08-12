@@ -257,6 +257,7 @@ def test_project_upload_exits_nonzero_on_partial_failure(monkeypatch, tmp_path):
     )
     assert result.exit_code == 1
     assert '"failed": 1' in result.stdout
+    assert "data_type" not in calls[0][1]
     assert "show_progress" not in calls[0][1]
 
 
@@ -322,6 +323,7 @@ def test_assets_cli_supports_custom_metadata(monkeypatch, tmp_path):
     assert upload_result.exit_code == 0
     assert set_result.exit_code == 0
     assert calls[0][2]["custom_metadata"] == metadata
+    assert "data_type" not in calls[0][2]
     assert calls[1] == (
         "set",
         "00000000-0000-0000-0000-000000000001",

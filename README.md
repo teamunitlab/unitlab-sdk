@@ -181,6 +181,7 @@ project = client.projects.get("PROJECT_ID")
 project = client.projects.create("Road scenes")
 
 batch = project.upload("./data", fps=2.0)
+tiled_batch = project.upload("./maps")
 
 status = batch.status()
 status = batch.wait(timeout=1800)
@@ -194,6 +195,11 @@ status = queue.wait()
 `ProcessingStatus` exposes `total`, `completed`, `processing`, and `failed`.
 Completion means `processing == 0`; a completed Batch Queue may still report
 individual failures.
+
+GeoTIFF and whole-slide files are detected automatically. Large tiled files
+upload directly to storage in bounded parts. Tiled processing can take hours,
+so use a longer timeout such as `batch.wait(timeout=25200)` when the next
+operation depends on the generated COG/DZI derivative.
 
 ### Data Units and project lifecycle
 
@@ -224,12 +230,18 @@ items = folder.list_items()
 result = client.assets.upload("./images", folder_id=folder.id, tags=["train"])
 asset = result.assets[0]
 
+tiled = client.assets.upload(
+    "./slides",
+    folder_id=folder.id,
+)
+tiled.assets[0].wait()
+
 cloud_folder = client.assets.create_cloud_folder(
     "Incoming",
     "CLOUD_STORAGE_ID",
     prefix="incoming/",
 )
-cloud_folder.sync_cloud()
+cloud_folder.sync_cloud()  # Tiled files are registered as processing Assets.
 ```
 
 ### Datasets and published versions
@@ -365,6 +377,7 @@ unitlab project data-unit PROJECT_ID DATA_UNIT_ID
 unitlab project sources PROJECT_ID
 unitlab project detach-source PROJECT_ID SOURCE_LINK_ID --preview
 unitlab project upload PROJECT_ID --source ./data
+unitlab project upload PROJECT_ID --source ./maps
 unitlab batch-queue list PROJECT_ID
 unitlab batch-queue detail PROJECT_ID BATCH_QUEUE_ID
 unitlab batch-queue status PROJECT_ID BATCH_QUEUE_ID
@@ -379,6 +392,7 @@ unitlab project attach PROJECT_ID --dataset-version DATASET_ID:2
 
 # Assets
 unitlab assets upload ./data --folder "Raw data" --tag incoming
+unitlab assets upload ./slides --folder "Slides"
 
 # Folders
 unitlab folders create "Raw data"

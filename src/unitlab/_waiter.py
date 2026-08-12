@@ -18,11 +18,11 @@ from .types import ProcessingStatus
 POLL_DELAYS = (1, 2, 4, 8, 10, 10, 10, 10, 20, 20)
 
 
-def wait_for_processing(
+def wait_for_status(
     api,
-    project_id: str,
-    batch_queue_id: str,
+    endpoint: str,
     *,
+    resource_name: str,
     timeout: float = 1800,
     on_progress: Callable[[ProcessingStatus], None] | None = None,
     show_progress: bool = False,
@@ -39,11 +39,7 @@ def wait_for_processing(
             if remaining <= 0:
                 break
             try:
-                raw = api.get(
-                    f"/api/sdk/projects/{project_id}/upload-sessions/"
-                    f"{batch_queue_id}/status/",
-                    timeout=remaining,
-                )
+                raw = api.get(endpoint, timeout=remaining)
                 status = ProcessingStatus._from_raw(raw)
                 last_status = status
                 transient_errors = 0
@@ -71,10 +67,29 @@ def wait_for_processing(
             attempt += 1
             time.sleep(min(delay, remaining))
         raise ProcessingTimeoutError(
-            f"Batch Queue {batch_queue_id} is still processing after "
-            f"{timeout:g} seconds.",
+            f"{resource_name} is still processing after {timeout:g} seconds.",
             status=last_status,
         )
     finally:
         if progress is not None:
             progress.close()
+
+
+def wait_for_processing(
+    api,
+    project_id: str,
+    batch_queue_id: str,
+    *,
+    timeout: float = 1800,
+    on_progress: Callable[[ProcessingStatus], None] | None = None,
+    show_progress: bool = False,
+) -> ProcessingStatus:
+    """Preserve the Batch Queue waiter API on top of the shared poller."""
+    return wait_for_status(
+        api,
+        f"/api/sdk/projects/{project_id}/upload-sessions/{batch_queue_id}/status/",
+        resource_name=f"Batch Queue {batch_queue_id}",
+        timeout=timeout,
+        on_progress=on_progress,
+        show_progress=show_progress,
+    )

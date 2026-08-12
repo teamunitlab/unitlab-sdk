@@ -1,13 +1,15 @@
 from __future__ import annotations
 
 import sys
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from .. import _uploader
+from .._waiter import wait_for_status
 from ..exceptions import UnitlabError, ValidationError
-from ..types import AssetUploadResult, _data_type_name
+from ..types import AssetUploadResult, ProcessingStatus, _data_type_name
 from ._base import Namespace, identifier
 
 if TYPE_CHECKING:
@@ -244,6 +246,7 @@ class Asset:
     tags: list[str] = field(default_factory=list)
     custom_metadata: dict[str, Any] | None = None
     created: str = ""
+    upload_status: str = ""
 
     @classmethod
     def _from_raw(cls, client: UnitlabClient, raw: dict[str, Any]) -> Asset:
@@ -262,7 +265,42 @@ class Asset:
                 else None
             ),
             created=str(raw.get("created", "")),
+            upload_status=str(raw.get("upload_status", "")),
         )
+
+    def status(self) -> ProcessingStatus:
+        raw = self._client._api.get(
+            f"/api/sdk/data-assets/assets/{self.id}/tiled-status/"
+        )
+        self.upload_status = str(raw.get("upload_status", self.upload_status))
+        return ProcessingStatus._from_raw(raw)
+
+    def wait(
+        self,
+        *,
+        timeout: float = 25200,
+        on_progress: Callable[[ProcessingStatus], None] | None = None,
+        show_progress: bool = True,
+    ) -> ProcessingStatus:
+        status = wait_for_status(
+            self._client._api,
+            f"/api/sdk/data-assets/assets/{self.id}/tiled-status/",
+            resource_name=f"Asset {self.id}",
+            timeout=timeout,
+            on_progress=on_progress,
+            show_progress=show_progress,
+        )
+        self.upload_status = str(
+            status.raw.get("upload_status", status.status or self.upload_status)
+        )
+        return status
+
+    def retry(self) -> dict[str, Any]:
+        raw = self._client._api.post(
+            f"/api/sdk/data-assets/assets/{self.id}/tiled-retry/"
+        )
+        self.upload_status = str(raw.get("status", "processing"))
+        return raw
 
     def update_custom_metadata(
         self,

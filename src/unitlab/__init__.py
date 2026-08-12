@@ -3,6 +3,7 @@ from importlib.metadata import version
 from ._grouping import tiles_from_template
 from .client import UnitlabClient
 from .exceptions import (
+    AmbiguousUploadCompletionError,
     AuthenticationError,
     NetworkError,
     NotFoundError,
@@ -55,6 +56,7 @@ from .types import (
 __version__ = version("unitlab")
 
 __all__ = [
+    "AmbiguousUploadCompletionError",
     "Asset",
     "AssetUploadResult",
     "AttachPreview",

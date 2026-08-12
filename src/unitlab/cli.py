@@ -627,6 +627,7 @@ def assets_upload(
                     "data_type": asset.data_type,
                     "folder_id": asset.folder_id,
                     "custom_metadata": asset.custom_metadata,
+                    "upload_status": getattr(asset, "upload_status", ""),
                 }
                 for asset in result.assets
             ],
