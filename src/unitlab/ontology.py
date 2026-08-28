@@ -15,6 +15,8 @@ class Shape(str, Enum):
     CUBOID = "cuboid"
     TIME_RANGE = "time_range"
     TEXT = "text"
+    INTERVAL = "interval"
+    INSTANT = "instant"
 
 
 class OntologyClassificationLevel(str, Enum):

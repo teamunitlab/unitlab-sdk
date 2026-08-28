@@ -26,6 +26,9 @@ class AssetsNamespace(Namespace):
         path: str | None = None,
         tags: list[str] | None = None,
         custom_metadata: dict[str, Any] | None = None,
+        defer_timeseries_configuration: bool = False,
+        generic_type: str | None = None,
+        primary_column: str | None = None,
     ) -> AssetUploadResult:
         """Upload local files into workspace Assets.
 
@@ -36,6 +39,12 @@ class AssetsNamespace(Namespace):
             path: Logical path created below the destination folder.
             tags: Tags applied to uploaded Assets.
             custom_metadata: User-owned JSON metadata applied to every upload.
+            defer_timeseries_configuration: Keep the legacy deferred chart flow
+                when ``generic_type="timeseries"`` is explicitly selected.
+            generic_type: Explicit upload family, such as ``tabular`` for CSV
+                row mode. Omitted CSV Assets remain family-neutral until they
+                are attached to a project.
+            primary_column: Preferred row-mode CSV text column.
 
         Returns:
             Successful Assets and per-file failures without discarding partial
@@ -49,6 +58,9 @@ class AssetsNamespace(Namespace):
             path=path,
             tags=tags,
             custom_metadata=custom_metadata,
+            defer_timeseries_configuration=defer_timeseries_configuration,
+            generic_type=generic_type,
+            primary_column=primary_column,
             show_progress=sys.stderr.isatty(),
         )
         assets = [
@@ -269,9 +281,7 @@ class Asset:
         )
 
     def status(self) -> ProcessingStatus:
-        raw = self._client._api.get(
-            f"/api/sdk/data-assets/assets/{self.id}/tiled-status/"
-        )
+        raw = self._client._api.get(f"/api/sdk/data-assets/assets/{self.id}/status/")
         self.upload_status = str(raw.get("upload_status", self.upload_status))
         return ProcessingStatus._from_raw(raw)
 
@@ -284,7 +294,7 @@ class Asset:
     ) -> ProcessingStatus:
         status = wait_for_status(
             self._client._api,
-            f"/api/sdk/data-assets/assets/{self.id}/tiled-status/",
+            f"/api/sdk/data-assets/assets/{self.id}/status/",
             resource_name=f"Asset {self.id}",
             timeout=timeout,
             on_progress=on_progress,
@@ -300,6 +310,19 @@ class Asset:
             f"/api/sdk/data-assets/assets/{self.id}/tiled-retry/"
         )
         self.upload_status = str(raw.get("status", "processing"))
+        return raw
+
+    def configure_timeseries(
+        self,
+        *,
+        x_column: str,
+        channels: list[str],
+    ) -> dict[str, Any]:
+        raw = self._client._api.post(
+            f"/api/sdk/data-assets/assets/{self.id}/timeseries-configuration/",
+            json={"x_column": x_column, "channels": channels},
+        )
+        self.upload_status = str(raw.get("upload_status", self.upload_status))
         return raw
 
     def update_custom_metadata(

@@ -252,6 +252,18 @@ def test_ontology_builder_and_client_contract():
     client.close()
 
 
+@pytest.mark.parametrize("shape_value", ("interval", "instant"))
+def test_timeseries_ontology_shapes_round_trip(shape_value):
+    shape = Shape(shape_value)
+    structure = OntologyStructure()
+
+    created = structure.add_object("Chart event", shape)
+    restored = OntologyStructure.from_dict(structure.to_dict()).objects[0]
+
+    assert created.shape is shape
+    assert restored.shape is shape
+
+
 def test_release_detail_parses_and_downloads(monkeypatch):
     def handler(request):
         assert request.url.path == "/api/sdk/releases/r1/"

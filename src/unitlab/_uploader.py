@@ -56,10 +56,12 @@ TILED_EXTENSIONS = (
 EXTENSIONS_BY_GENERIC_TYPE: dict[str, set[str]] = {
     "img": {"jpg", "png", "jpeg", "webp", "gif", "bmp", "ico", "svg"},
     "text": {"txt"},
+    "html": {"html", "htm"},
     "video": {"mp4", "avi", "mov", "webm", "mkv", "m4v", "wmv", "flv"},
     "audio": {"mp3", "wav", "ogg", "aac", "flac", "m4a"},
     "medical": {"dcm", "nii", "nii.gz", "nrrd"},
     "document": {"pdf"},
+    "timeseries": {"csv"},
     "geospatial": AMBIGUOUS_TIFF_EXTENSIONS | GEOSPATIAL_TILED_EXTENSIONS,
     "pathology": PATHOLOGY_TILED_EXTENSIONS,
 }
@@ -396,6 +398,7 @@ async def _finalize_medical_upload(client, endpoint: str, batch_queue_id: str) -
 def _project_files(
     source: str | Path,
     upload_info: dict[str, Any],
+    generic_type: str | None = None,
 ) -> tuple[list[Path], list[UploadFailure]]:
     accepted = {
         str(value).lower().lstrip(".")
@@ -411,8 +414,10 @@ def _project_files(
     result = []
     failures = []
     for path in files:
-        generic_type = detect_generic_type(path.name) or project_type
-        max_size = max_sizes.get(generic_type)
+        file_generic_type = (
+            generic_type or detect_generic_type(path.name) or project_type
+        )
+        max_size = max_sizes.get(file_generic_type)
         if max_size is None and project_type and fallback is not None:
             max_size = int(fallback)
         if max_size is None or path.stat().st_size <= max_size:
@@ -435,6 +440,8 @@ async def _upload_project_async(
     *,
     session_id: str,
     fps: float,
+    generic_type: str | None,
+    primary_column: str | None,
     batch_size: int,
     show_progress: bool,
 ) -> UploadResult:
@@ -455,11 +462,15 @@ async def _upload_project_async(
                 tasks = []
                 generic_types = []
                 for path in chunk:
-                    generic_type = detect_generic_type(path.name)
-                    generic_types.append(generic_type)
+                    file_generic_type = generic_type or detect_generic_type(path.name)
+                    generic_types.append(file_generic_type)
                     fields = {"session_id": session_id}
-                    if generic_type == "video":
+                    if file_generic_type == "video":
                         fields["fps"] = str(fps)
+                    if generic_type is not None:
+                        fields["generic_type"] = generic_type
+                    if primary_column is not None:
+                        fields["primary_column"] = primary_column
                     tasks.append(
                         _upload_file(
                             client,
@@ -533,13 +544,15 @@ def upload_project(
     source: str | Path,
     *,
     fps: float = 1.0,
+    generic_type: str | None = None,
+    primary_column: str | None = None,
     batch_size: int = 100,
     show_progress: bool = True,
 ) -> tuple[UploadResult, str]:
     if batch_size < 1:
         raise ValueError("batch_size must be at least 1")
     upload_info = api.get(f"/api/sdk/projects/{project_id}/upload-info/")
-    files, preflight_failures = _project_files(source, upload_info)
+    files, preflight_failures = _project_files(source, upload_info, generic_type)
     if not files and not preflight_failures:
         accepted = upload_info.get("accepted_formats") or sorted(known_extensions())
         raise ValueError(
@@ -560,6 +573,8 @@ def upload_project(
             files,
             session_id=session_id,
             fps=fps,
+            generic_type=generic_type,
+            primary_column=primary_column,
             batch_size=batch_size,
             show_progress=show_progress,
         )
@@ -576,6 +591,9 @@ def _asset_form_data(
     path: str | None,
     tags: list[str] | None,
     custom_metadata: dict[str, Any] | None,
+    defer_timeseries_configuration: bool,
+    generic_type: str | None,
+    primary_column: str | None,
 ) -> dict[str, str | list[str]]:
     fields: dict[str, str | list[str]] = {}
     if folder:
@@ -592,6 +610,12 @@ def _asset_form_data(
             ensure_ascii=False,
             separators=(",", ":"),
         )
+    if defer_timeseries_configuration:
+        fields["defer_timeseries_configuration"] = "true"
+    if generic_type is not None:
+        fields["generic_type"] = generic_type
+    if primary_column is not None:
+        fields["primary_column"] = primary_column
     return fields
 
 
@@ -640,6 +664,9 @@ async def _upload_assets_async(
     path: str | None,
     tags: list[str] | None,
     custom_metadata: dict[str, Any] | None,
+    defer_timeseries_configuration: bool,
+    generic_type: str | None,
+    primary_column: str | None,
     show_progress: bool,
 ) -> tuple[UploadResult, str, str]:
     failures: list[UploadFailure] = []
@@ -668,6 +695,9 @@ async def _upload_assets_async(
                         path=path,
                         tags=tags,
                         custom_metadata=custom_metadata,
+                        defer_timeseries_configuration=defer_timeseries_configuration,
+                        generic_type=generic_type,
+                        primary_column=primary_column,
                     ),
                     tiled_endpoint="/api/sdk/data-assets/tiled-uploads",
                     complete_fields=_asset_complete_data(
@@ -708,6 +738,9 @@ async def _upload_assets_async(
                                 path=path,
                                 tags=tags,
                                 custom_metadata=custom_metadata,
+                                defer_timeseries_configuration=defer_timeseries_configuration,
+                                generic_type=generic_type,
+                                primary_column=primary_column,
                             ),
                             tiled_endpoint="/api/sdk/data-assets/tiled-uploads",
                             complete_fields=_asset_complete_data(
@@ -756,6 +789,9 @@ def upload_assets(
     path: str | None = None,
     tags: list[str] | None = None,
     custom_metadata: dict[str, Any] | None = None,
+    defer_timeseries_configuration: bool = False,
+    generic_type: str | None = None,
+    primary_column: str | None = None,
     show_progress: bool = True,
 ) -> tuple[UploadResult, str, str]:
     if folder and folder_id:
@@ -774,6 +810,9 @@ def upload_assets(
             path=path,
             tags=tags,
             custom_metadata=custom_metadata,
+            defer_timeseries_configuration=defer_timeseries_configuration,
+            generic_type=generic_type,
+            primary_column=primary_column,
             show_progress=show_progress,
         )
     )

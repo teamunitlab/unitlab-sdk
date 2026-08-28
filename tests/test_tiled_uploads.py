@@ -503,8 +503,45 @@ def test_asset_status_wait_and_retry_use_sdk_endpoints():
     assert asset.retry() == {"task_id": "task-2", "status": "processing"}
     assert asset.upload_status == "processing"
     assert requests == [
-        ("GET", "/api/sdk/data-assets/assets/asset-1/tiled-status/"),
-        ("GET", "/api/sdk/data-assets/assets/asset-1/tiled-status/"),
+        ("GET", "/api/sdk/data-assets/assets/asset-1/status/"),
+        ("GET", "/api/sdk/data-assets/assets/asset-1/status/"),
         ("POST", "/api/sdk/data-assets/assets/asset-1/tiled-retry/"),
+    ]
+    client.close()
+
+
+def test_html_asset_status_and_wait_use_general_status_endpoint():
+    requests = []
+
+    def handler(request):
+        requests.append((request.method, request.url.path))
+        return httpx.Response(
+            200,
+            json={
+                "status": "completed",
+                "upload_status": "completed",
+                "total": 1,
+                "completed": 1,
+                "processing": 0,
+                "failed": 0,
+            },
+        )
+
+    client = configured_client(handler)
+    asset = Asset._from_raw(
+        client,
+        {
+            "pk": "asset-html",
+            "file_name": "page.html",
+            "generic_type": "html",
+            "upload_status": "processing",
+        },
+    )
+
+    assert asset.status().status == "completed"
+    assert asset.wait(show_progress=False).completed == 1
+    assert requests == [
+        ("GET", "/api/sdk/data-assets/assets/asset-html/status/"),
+        ("GET", "/api/sdk/data-assets/assets/asset-html/status/"),
     ]
     client.close()

@@ -256,6 +256,8 @@ class Project:
         source: str | Path,
         *,
         fps: float = 1.0,
+        generic_type: str | None = None,
+        primary_column: str | None = None,
         batch_size: int = 100,
     ) -> UploadBatch:
         """Upload local files into this Project.
@@ -263,17 +265,25 @@ class Project:
         Args:
             source: File or directory to upload.
             fps: Frame rate used for uploaded video.
+            generic_type: Explicit upload family, such as ``tabular`` for CSV
+                row mode. Omitted CSV uploads remain pending until configured
+                in the target project.
+            primary_column: Preferred row-mode CSV text column.
             batch_size: Files scheduled per local upload batch.
 
         Returns:
             Local upload results and the server-side Batch Queue ID. Server
-            processing may still be running.
+            processing may still be running. Declared ``tabular`` uploads are
+            accepted asynchronously and their datasource IDs are returned
+            immediately.
         """
         result, session_id = _uploader.upload_project(
             self._client._api,
             self.id,
             source,
             fps=fps,
+            generic_type=generic_type,
+            primary_column=primary_column,
             batch_size=batch_size,
             show_progress=sys.stderr.isatty(),
         )

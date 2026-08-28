@@ -8,10 +8,23 @@ from unitlab import (
     AuthenticationError,
     ProcessingTimeoutError,
     UnitlabClient,
+    _uploader,
     tiles_from_template,
 )
 from unitlab.resources.assets import Asset
 from unitlab.resources.projects import BatchQueue, Project
+
+
+@pytest.mark.parametrize(
+    ("filename", "generic_type"),
+    (("page.html", "html"), ("page.htm", "html"), ("series.csv", "timeseries")),
+)
+def test_html_and_timeseries_files_are_uploadable(tmp_path, filename, generic_type):
+    path = tmp_path / filename
+    path.write_bytes(b"content")
+
+    assert _uploader.detect_generic_type(filename) == generic_type
+    assert _uploader.collect_files(path) == [path]
 
 
 def configured_client(handler):
@@ -76,6 +89,49 @@ def test_project_upload_uses_one_batch_queue_and_chunks(tmp_path):
     assert len(batch.data_item_ids) == 21
     assert len(set(session_ids)) == 1
     assert batch.batch_queue_id == session_ids[0]
+    client.close()
+
+
+def test_project_upload_can_select_tabular_csv_row_mode(tmp_path):
+    upload_body = ""
+
+    def handler(request):
+        nonlocal upload_body
+        if request.method == "GET":
+            return httpx.Response(
+                200,
+                json={
+                    "accepted_formats": ["csv"],
+                    "max_file_sizes": {"timeseries": 1_000, "tabular": 1_000},
+                    "generic_type": None,
+                },
+            )
+        upload_body = request.content.decode("latin1")
+        return httpx.Response(
+            202,
+            json={
+                "datasource_id": "row-1",
+                "upload_session_id": "queue-1",
+                "generic_type": "tabular",
+                "upload_status": "processing",
+                "task_id": "tabular-task-1",
+            },
+        )
+
+    path = tmp_path / "feedback.csv"
+    path.write_text("id,comment\n1,Great product\n")
+    client = configured_client(handler)
+    project = Project("p1", "Project", {"pk": "p1"}, client)
+
+    batch = project.upload(path, generic_type="tabular", primary_column="comment")
+
+    assert batch.uploaded == 1
+    assert batch.raw[0]["upload_status"] == "processing"
+    assert batch.raw[0]["task_id"] == "tabular-task-1"
+    assert 'name="generic_type"' in upload_body
+    assert "tabular" in upload_body
+    assert 'name="primary_column"' in upload_body
+    assert "comment" in upload_body
     client.close()
 
 
@@ -288,6 +344,113 @@ def test_asset_upload_resolves_folder_once_then_reuses_id(tmp_path):
     assert all('name="custom_metadata"' in body for body in bodies)
     assert all('{"region":"CA-BC"}' in body for body in bodies)
     assert result.assets[0].custom_metadata == {"region": "CA-BC"}
+    client.close()
+
+
+def test_asset_upload_can_select_tabular_csv_row_mode(tmp_path):
+    upload_body = ""
+
+    def handler(request):
+        nonlocal upload_body
+        upload_body = request.content.decode("latin1")
+        return httpx.Response(
+            201,
+            json={
+                "folder_id": "folder-1",
+                "folder_name": "Feedback",
+                "asset": {
+                    "pk": "asset-1",
+                    "file_name": "feedback.csv",
+                    "generic_type": "tabular",
+                    "folder_id": "folder-1",
+                },
+            },
+        )
+
+    path = tmp_path / "feedback.csv"
+    path.write_text("id,comment\n1,Great product\n")
+    client = configured_client(handler)
+
+    result = client.assets.upload(
+        path,
+        folder="Feedback",
+        generic_type="tabular",
+        primary_column="comment",
+    )
+
+    assert result.uploaded == 1
+    assert 'name="generic_type"' in upload_body
+    assert "tabular" in upload_body
+    assert 'name="primary_column"' in upload_body
+    assert "comment" in upload_body
+    client.close()
+
+
+def test_deferred_timeseries_upload_can_be_completed(tmp_path):
+    upload_body = ""
+
+    def handler(request):
+        nonlocal upload_body
+        if request.url.path == "/api/sdk/data-assets/upload/":
+            upload_body = request.content.decode("latin1")
+            return httpx.Response(
+                202,
+                json={
+                    "folder_id": "folder-1",
+                    "folder_name": "Charts",
+                    "timeseries_configuration_required": True,
+                    "configuration": {
+                        "columns": ["time", "value"],
+                        "defaults": {"x_column": "time", "channels": ["value"]},
+                    },
+                    "asset": {
+                        "pk": "asset-1",
+                        "file_name": "chart.csv",
+                        "generic_type": "timeseries",
+                        "folder_id": "folder-1",
+                        "upload_status": "processing",
+                    },
+                },
+            )
+        assert request.url.path == (
+            "/api/sdk/data-assets/assets/asset-1/timeseries-configuration/"
+        )
+        assert json.loads(request.content) == {
+            "x_column": "time",
+            "channels": ["value"],
+        }
+        return httpx.Response(
+            200,
+            json={
+                "asset_id": "asset-1",
+                "upload_status": "completed",
+                "timeseries_configuration_required": False,
+                "configuration": None,
+                "timeseries": {"x_column": "time", "channels": ["value"]},
+            },
+        )
+
+    path = tmp_path / "chart.csv"
+    path.write_text("time,value\n0,1\n1,2\n")
+    client = configured_client(handler)
+
+    result = client.assets.upload(
+        path,
+        folder="Charts",
+        defer_timeseries_configuration=True,
+    )
+    assert 'name="defer_timeseries_configuration"' in upload_body
+    assert "true" in upload_body
+    assert result.raw[0]["configuration"]["defaults"]["x_column"] == "time"
+    asset = result.assets[0]
+
+    configuration = asset.configure_timeseries(
+        x_column="time",
+        channels=["value"],
+    )
+
+    assert configuration["timeseries_configuration_required"] is False
+    assert asset.upload_status == "completed"
     client.close()
 
 
