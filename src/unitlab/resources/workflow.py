@@ -315,6 +315,36 @@ class WorkflowTask:
     def skip(self) -> WorkflowTask:
         return self._perform("skip")
 
+    def complete_model_run(
+        self,
+        run_id: str,
+        result: dict[str, Any] | list[dict[str, Any]],
+        *,
+        model_version: str = "",
+    ) -> WorkflowTask:
+        """Upload one or more final GeoJSON results for a Model-stage run."""
+        result_key = "results" if isinstance(result, list) else "result"
+        return self._replace(
+            self._client._api.post(
+                f"/api/sdk/workflow-tasks/{self.id}/model-result/",
+                json={
+                    "run_id": str(run_id),
+                    "status": "complete",
+                    result_key: result,
+                    "model_version": model_version,
+                },
+            )
+        )
+
+    def fail_model_run(self, run_id: str, error: str) -> WorkflowTask:
+        """Report a failed asynchronous Model-stage run without advancing it."""
+        return self._replace(
+            self._client._api.post(
+                f"/api/sdk/workflow-tasks/{self.id}/model-result/",
+                json={"run_id": str(run_id), "status": "failed", "error": error},
+            )
+        )
+
     def move(self, destination_stage, *, reason: str = "") -> WorkflowTask:
         """Move this task directly, bypassing normal Workflow edges.
 

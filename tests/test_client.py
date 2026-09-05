@@ -598,6 +598,24 @@ def test_folder_dataset_and_workflow_items():
                     "move_targets": [{"stage_id": "complete", "allowed": True}],
                 },
             )
+        if path == "/api/sdk/workflow-tasks/t1/model-result/":
+            payload = json.loads(request.content)
+            assert payload["run_id"] == "11111111-1111-1111-1111-111111111111"
+            if payload["status"] == "complete":
+                assert len(payload["results"]) == 2
+                assert payload["results"][0]["type"] == "FeatureCollection"
+                assert payload["model_version"] == "geo-v1"
+            else:
+                assert payload["error"] == "provider failed"
+            return httpx.Response(
+                200,
+                json={
+                    "task": task_state(),
+                    "queue": {"name": "cat.png", "task_status": payload["status"]},
+                    "available_actions": [],
+                    "move_targets": [],
+                },
+            )
         raise AssertionError(request.url)
 
     client = client_with_handler(handler)
@@ -618,6 +636,15 @@ def test_folder_dataset_and_workflow_items():
     task = stage.get_tasks()[0]
     assert task.name == "cat.png"
     assert client.get_workflow_task("t1").available_actions == ["complete", "assign"]
+    task.complete_model_run(
+        "11111111-1111-1111-1111-111111111111",
+        [
+            {"type": "FeatureCollection", "features": []},
+            {"type": "FeatureCollection", "features": []},
+        ],
+        model_version="geo-v1",
+    )
+    task.fail_model_run("11111111-1111-1111-1111-111111111111", "provider failed")
     task.submit()
     assert task.stage_id == "review"
     assert task.stage_type == "review"
