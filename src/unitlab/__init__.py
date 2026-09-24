@@ -5,6 +5,7 @@ from .client import UnitlabClient
 from .exceptions import (
     AmbiguousUploadCompletionError,
     AuthenticationError,
+    ConflictError,
     NetworkError,
     NotFoundError,
     PermissionDeniedError,
@@ -67,6 +68,7 @@ __all__ = [
     "ChecklistAttribute",
     "CloudEntry",
     "CloudStorage",
+    "ConflictError",
     "DataUnit",
     "Dataset",
     "DatasetItem",

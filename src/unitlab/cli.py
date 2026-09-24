@@ -195,6 +195,7 @@ SUMMARY_FIELDS = (
     "title",
     "file_name",
     "kind",
+    "task_kind",
     "type",
     "version",
     "status",
@@ -1249,6 +1250,17 @@ def release_create(
         ),
     ),
     license_id: UUID | None = typer.Option(None, "--license"),
+    # Unlike the Python API, the CLI does not wait by default: a Release can
+    # take a long time to prepare and a shell command should not hang on it.
+    wait: bool = typer.Option(
+        False,
+        "--wait/--no-wait",
+        help=(
+            "Wait until the Release is ready. Without it the command returns "
+            "the pending Release; follow it with `unitlab release wait`."
+        ),
+    ),
+    timeout: float = typer.Option(7200, help="Seconds to wait with --wait."),
     api_key: API_KEY = None,
     json_output: JSON_OUTPUT = False,
 ):
@@ -1269,8 +1281,21 @@ def release_create(
         data_types=data_type,
         include_download_tokens=include_download_tokens,
         license_id=str(license_id) if license_id else None,
+        wait=wait,
+        timeout=timeout,
     )
     emit(release, json_output)
+
+
+@release_app.command(name="wait", help="Wait until a Release is ready")
+def release_wait(
+    release_id: UUID,
+    timeout: float = typer.Option(7200),
+    api_key: API_KEY = None,
+    json_output: JSON_OUTPUT = False,
+):
+    release = get_client(api_key).releases.get(str(release_id))
+    emit(release.wait(timeout=timeout), json_output)
 
 
 @ontology_app.command(name="list", help="List Ontologies")

@@ -120,6 +120,164 @@ def test_small_tiff_uses_simple_asset_upload(tmp_path):
     client.close()
 
 
+def test_omitted_geospatial_limit_preserves_other_family_limits(tmp_path):
+    geospatial = tmp_path / "large.jp2"
+    small_image = tmp_path / "small.png"
+    oversized_image = tmp_path / "large.png"
+    for path, size in (
+        (geospatial, 5 * 1024**3),
+        (small_image, 1),
+        (oversized_image, 7 * 1024**2),
+    ):
+        with path.open("wb") as handle:
+            handle.truncate(size)
+
+    files, failures = _uploader._project_files(
+        tmp_path,
+        {
+            "max_file_sizes": {"img": 6 * 1024**2, "pathology": 2 * 1024**3},
+            "generic_type": None,
+            "max_file_size": 2 * 1024**3,
+        },
+    )
+
+    assert set(files) == {geospatial, small_image}
+    assert len(failures) == 1
+    assert failures[0].path == oversized_image
+
+
+def test_null_geospatial_limit_and_url_renewal(monkeypatch, tmp_path):
+    source = tmp_path / "area.jp2"
+    source.write_bytes(b"abcdefghij")
+    files, failures = _uploader._project_files(
+        source,
+        {
+            "max_file_sizes": {"geospatial": None, "pathology": 1},
+            "generic_type": "geospatial",
+            "max_file_size": 1,
+        },
+    )
+    assert files == [source]
+    assert failures == []
+    calls = []
+
+    async def no_sleep(_delay):
+        return None
+
+    monkeypatch.setattr(_uploader.asyncio, "sleep", no_sleep)
+
+    def handler(request):
+        calls.append(request.url.path)
+        if request.url.path.endswith("/initiate/"):
+            return httpx.Response(
+                200,
+                json={
+                    "upload_token": "token-1",
+                    "part_size": 10,
+                    "part_urls": [
+                        {"part_number": 1, "url": "https://storage.test/old"}
+                    ],
+                    "expires_in": 43200,
+                },
+            )
+        if request.url.path == "/old":
+            return httpx.Response(403)
+        if request.url.path.endswith("/refresh/"):
+            assert json.loads(request.content) == {
+                "upload_token": "token-1",
+                "part_numbers": [1],
+            }
+            return httpx.Response(
+                200,
+                json={
+                    "upload_token": "token-2",
+                    "expires_in": 43200,
+                    "part_urls": [
+                        {"part_number": 1, "url": "https://storage.test/fresh"}
+                    ],
+                },
+            )
+        if request.url.path == "/fresh":
+            assert request.content == b"abcdefghij"
+            return httpx.Response(200, headers={"ETag": '"etag"'})
+        assert request.url.path.endswith("/complete/")
+        assert json.loads(request.content)["upload_token"] == "token-2"
+        return httpx.Response(202, json={"datasource_id": "datasource-1"})
+
+    async def upload():
+        async with httpx.AsyncClient(
+            transport=httpx.MockTransport(handler), base_url="https://testserver"
+        ) as client:
+            return await _uploader._upload_tiled_file(
+                client,
+                client,
+                _uploader.asyncio.Semaphore(3),
+                "/tiled",
+                source,
+            )
+
+    assert _uploader.run_sync(upload())["datasource_id"] == "datasource-1"
+    assert calls == [
+        "/tiled/initiate/",
+        "/old",
+        "/tiled/refresh/",
+        "/fresh",
+        "/tiled/complete/",
+    ]
+
+
+def test_slow_upload_survives_python310_heartbeat_timeout(monkeypatch, tmp_path):
+    source = tmp_path / "area.jp2"
+    source.write_bytes(b"raster")
+
+    # Python 3.10's asyncio timeout is not the built-in TimeoutError.
+    class LegacyTimeoutError(Exception):
+        pass
+
+    async def upload():
+        heartbeat = _uploader.asyncio.Event()
+        wait_for = _uploader.asyncio.wait_for
+
+        async def first_heartbeat(awaitable, timeout):
+            if not heartbeat.is_set():
+                awaitable.close()
+                await _uploader.asyncio.sleep(0)
+                heartbeat.set()
+                raise LegacyTimeoutError
+            return await wait_for(awaitable, timeout)
+
+        monkeypatch.setattr(_uploader.asyncio, "TimeoutError", LegacyTimeoutError)
+        monkeypatch.setattr(_uploader.asyncio, "wait_for", first_heartbeat)
+
+        async def handler(request):
+            if request.url.path.endswith("/initiate/"):
+                return httpx.Response(
+                    200,
+                    json={
+                        "upload_token": "token",
+                        "part_size": 6,
+                        "part_urls": [
+                            {"part_number": 1, "url": "https://storage.test/part"}
+                        ],
+                        "expires_in": 43200,
+                    },
+                )
+            if request.url.path == "/part":
+                await heartbeat.wait()
+                return httpx.Response(200, headers={"ETag": "etag"})
+            assert request.url.path == "/tiled/complete/"
+            return httpx.Response(202, json={"datasource_id": "datasource-1"})
+
+        async with httpx.AsyncClient(
+            transport=httpx.MockTransport(handler), base_url="https://testserver"
+        ) as client:
+            return await _uploader._upload_tiled_file(
+                client, client, _uploader.asyncio.Semaphore(3), "/tiled", source
+            )
+
+    assert _uploader.run_sync(upload())["datasource_id"] == "datasource-1"
+
+
 def test_project_multipart_upload_retries_only_puts_and_uses_plain_storage_client(
     monkeypatch,
     tmp_path,

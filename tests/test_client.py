@@ -325,6 +325,133 @@ def test_multimodal_release_uses_all_available_types():
     client.close()
 
 
+RELEASE_ROW = {"pk": "r1", "name": "Snapshot", "version": "0.3", "generic_type": None}
+PENDING_RELEASE = {
+    **RELEASE_ROW,
+    "number_of_data": None,
+    "status": "pending",
+    "progress": 0,
+    "status_error": None,
+}
+READY_RELEASE = {
+    **PENDING_RELEASE,
+    "number_of_data": 3,
+    "status": "ready",
+    "progress": 100,
+}
+# /status/ answers in the ProcessingStatus shape; processing == 0 ends the poll.
+EXPORTING = {"status": "processing", "total": 100, "completed": 40, "processing": 1}
+COMPLETED = {"status": "completed", "total": 100, "completed": 100, "processing": 0}
+CREATE_RELEASE = ("POST", "/api/sdk/projects/p1/releases/")
+RELEASE_STATUS = ("GET", "/api/sdk/releases/r1/status/")
+RELEASE_DETAIL = ("GET", "/api/sdk/releases/r1/")
+
+
+def release_client(responses, calls):
+    """Answer requests from a queue so each test pins the exact call order."""
+    queue = list(responses)
+
+    def handler(request):
+        calls.append((request.method, request.url.path))
+        status_code, body = queue.pop(0)
+        return httpx.Response(status_code, json=body)
+
+    client = client_with_handler(handler)
+    return client, Project("p1", "Project", {"pk": "p1"}, client)
+
+
+def test_release_create_waits_until_the_async_release_is_ready(monkeypatch):
+    monkeypatch.setattr("unitlab._waiter.time.sleep", lambda _delay: None)
+    calls = []
+    client, project = release_client(
+        [
+            (202, PENDING_RELEASE),
+            (200, EXPORTING),
+            (200, COMPLETED),
+            (200, READY_RELEASE),
+        ],
+        calls,
+    )
+
+    release = client.releases.create(project)
+
+    assert calls == [CREATE_RELEASE, RELEASE_STATUS, RELEASE_STATUS, RELEASE_DETAIL]
+    assert release.status == "ready"
+    assert release.progress == 100
+    assert release.data_item_count == 3
+    client.close()
+
+
+def test_release_create_without_wait_returns_the_pending_release():
+    calls = []
+    client, project = release_client([(202, PENDING_RELEASE)], calls)
+
+    release = client.releases.create(project, wait=False)
+
+    assert calls == [CREATE_RELEASE]
+    assert release.status == "pending"
+    assert release.progress == 0
+    assert release.data_item_count == 0
+    client.close()
+
+
+def test_release_wait_raises_when_the_release_failed(monkeypatch):
+    monkeypatch.setattr("unitlab._waiter.time.sleep", lambda _delay: None)
+    calls = []
+    failed = {"status": "failed", "total": 100, "completed": 40, "processing": 0}
+    client, project = release_client(
+        [
+            (202, PENDING_RELEASE),
+            (200, {**failed, "failed": 1}),
+            (200, {**PENDING_RELEASE, "status": "failed", "status_error": "Disk full"}),
+        ],
+        calls,
+    )
+
+    with pytest.raises(unitlab.UnitlabError, match="Disk full") as exc:
+        client.releases.create(project)
+
+    assert exc.value.code == "release_failed"
+    assert calls == [CREATE_RELEASE, RELEASE_STATUS, RELEASE_DETAIL]
+    client.close()
+
+
+def test_release_create_never_polls_a_backend_without_release_status():
+    # A synchronous (pre-async) backend answers 201 with no status field and
+    # has no /status/ route, so polling it would 404 a finished release.
+    calls = []
+    legacy = {**RELEASE_ROW, "number_of_data": 3}
+    client, project = release_client([(201, legacy)], calls)
+
+    release = client.releases.create(project)
+
+    assert calls == [CREATE_RELEASE]
+    assert release.status is None
+    assert release.data_item_count == 3
+    client.close()
+
+
+def test_release_conflicts_propagate_as_conflict_error():
+    conflict = {"detail": "Release 0.3 is still being prepared (40%)."}
+    client, project = release_client(
+        [
+            (409, {**conflict, "code": "release_in_progress", "release_id": "r1"}),
+            (409, {**conflict, "code": "release_not_ready"}),
+        ],
+        [],
+    )
+
+    with pytest.raises(unitlab.ConflictError) as duplicate:
+        client.releases.create(project)
+    assert duplicate.value.code == "release_in_progress"
+
+    pending = unitlab.Release._from_raw(client, PENDING_RELEASE)
+    with pytest.raises(unitlab.ConflictError, match="still being prepared") as early:
+        pending.download("train")
+    assert early.value.code == "release_not_ready"
+    client.close()
+
+
 def test_data_units_project_lifecycle_sources_and_release_creation():
     calls = []
 
@@ -635,6 +762,10 @@ def test_folder_dataset_and_workflow_items():
     stage = project.workflow.get_stage(stage_type="annotate")
     task = stage.get_tasks()[0]
     assert task.name == "cat.png"
+    assert task.task_kind == "item_state"
+    assert task.parent_item_id is None
+    assert task.assignment_id is None
+    assert task.consensus_summary is None
     assert client.get_workflow_task("t1").available_actions == ["complete", "assign"]
     task.complete_model_run(
         "11111111-1111-1111-1111-111111111111",
@@ -654,6 +785,287 @@ def test_folder_dataset_and_workflow_items():
     assert task.available_actions == ["approve", "reject"]
     assert task.move_targets == [{"stage_id": "complete", "allowed": True}]
     client.close()
+
+
+@pytest.mark.parametrize(
+    ("queue", "datasource_id", "assigned_to_id"),
+    [
+        (
+            {"datasource_id": "private-branch", "assigned_to_id": "voter"},
+            "private-branch",
+            "voter",
+        ),
+        (
+            {"datasource_id": "private-branch", "assigned_to_id": None},
+            "private-branch",
+            None,
+        ),
+        ({}, "parent-data", "parent-owner"),
+    ],
+)
+def test_workflow_task_refresh_uses_queue_resource_identity(
+    queue, datasource_id, assigned_to_id
+):
+    def handler(request):
+        assert request.url.path in {
+            "/api/sdk/workflow-tasks/vote-1/",
+            "/api/sdk/workflow-tasks/vote-1/assign/",
+        }
+        return httpx.Response(
+            200,
+            json={
+                "task": {
+                    "uuid": "parent-task",
+                    "task_id": "vote-1",
+                    "task_kind": "consensus_branch",
+                    "assignment_id": "vote-1",
+                    "parent_item_id": "parent-task",
+                    "datasource_id": "parent-data",
+                    "assigned_to_id": "parent-owner",
+                },
+                "queue": queue,
+            },
+        )
+
+    client = client_with_handler(handler)
+    task = client.get_workflow_task("vote-1")
+    for refreshed in (task, task.assign("voter")):
+        assert refreshed.id == "vote-1"
+        assert refreshed.assignment_id == "vote-1"
+        assert refreshed.parent_item_id == "parent-task"
+        assert refreshed.datasource_id == datasource_id
+        assert refreshed.assigned_to_id == assigned_to_id
+    client.close()
+
+
+def test_consensus_workflow_task_routes_with_branch_identity_and_refreshes_fields():
+    mutation_count = 0
+
+    def detail_envelope(*, task_status="new", summary_location="top"):
+        task = {
+            "uuid": "branch-task-1",
+            "project_id": "p1",
+            "datasource_id": "data1",
+            "current_stage": {"id": "consensus", "type": "review"},
+            "status": "consensus",
+            "assigned_to_id": "annotator-1",
+            "priority": 0,
+            "task_kind": "consensus_branch",
+            "parent_item_id": "parent-item-1",
+            "assignment_id": "assignment-1",
+        }
+        summary = {"agreement": 0.75, "task_status": task_status}
+        if summary_location == "task":
+            task["consensus_summary"] = summary
+        return {
+            "task": task,
+            "queue": {
+                "name": "cat.png",
+                "task_status": task_status,
+                "generic_type": "img",
+            },
+            "consensus_summary": summary if summary_location == "top" else None,
+        }
+
+    def handler(request):
+        nonlocal mutation_count
+        path = request.url.path
+        if path == "/api/sdk/projects/p1/workflow/stages/":
+            return httpx.Response(
+                200,
+                json={
+                    "stages": [
+                        {
+                            "id": "consensus",
+                            "uuid": "stage-1",
+                            "name": "Consensus",
+                            "type": "review",
+                            "task_count": 1,
+                        }
+                    ]
+                },
+            )
+        if path == "/api/sdk/projects/p1/workflow/stages/consensus/tasks/":
+            return httpx.Response(
+                200,
+                json={
+                    "results": [
+                        {
+                            "task_id": "branch-task-1",
+                            "item_id": "parent-item-1",
+                            "parent_item_id": "parent-item-1",
+                            "assignment_id": "assignment-1",
+                            "task_kind": "consensus_branch",
+                            "consensus_summary": {"agreement": 0.5},
+                            "stage_id": "consensus",
+                            "stage_type": "review",
+                            "status": "consensus",
+                            "task_status": "new",
+                            "priority": 0,
+                        }
+                    ],
+                    "next": None,
+                },
+            )
+        if path == "/api/sdk/workflow-tasks/branch-task-1/consensus-comparison/":
+            return httpx.Response(200, json={"components": [{"kind": "annotation"}]})
+        if path == "/api/sdk/workflow-tasks/branch-task-1/consensus-selections/":
+            payload = json.loads(request.content)
+            assert payload["source_assignment_id"] == "assignment-source-2"
+            assert payload["component_kind"] == "annotation"
+            assert payload["component_locator"] == {"object_id": "obj-1"}
+            assert payload["operation"] == "replace"
+            assert payload["panel_id"] == "panel-1"
+            assert payload["replacement_locator"] == {"object_id": "obj-old"}
+            assert payload["expected_stage_id"] == "consensus"
+            assert payload["idempotency_key"]
+            return httpx.Response(200, json=detail_envelope(task_status="selected"))
+        if path in {
+            "/api/sdk/workflow-tasks/branch-task-1/claim/",
+            "/api/sdk/workflow-tasks/branch-task-1/assign/",
+            "/api/sdk/workflow-tasks/branch-task-1/release/",
+            "/api/sdk/workflow-tasks/branch-task-1/actions/",
+        }:
+            if path.endswith("/actions/"):
+                payload = json.loads(request.content)
+                assert payload["action"] == "complete"
+                assert payload["expected_stage_id"] == "consensus"
+            mutation_count += 1
+            return httpx.Response(
+                200,
+                json=detail_envelope(
+                    task_status=f"refreshed-{mutation_count}",
+                    summary_location="task" if mutation_count == 2 else "top",
+                ),
+            )
+        raise AssertionError(request.url)
+
+    client = client_with_handler(handler)
+    project = Project("p1", "Project", {"pk": "p1"}, client)
+    task = project.workflow.get_stage(stage_id="consensus").get_tasks()[0]
+
+    assert task.id == "branch-task-1"
+    assert task.parent_item_id == "parent-item-1"
+    assert task.assignment_id == "assignment-1"
+    assert task.task_kind == "consensus_branch"
+    assert task.consensus_summary == {"agreement": 0.5}
+    assert task.get_consensus_comparison() == {"components": [{"kind": "annotation"}]}
+
+    task.copy_consensus_component(
+        source_assignment_id="assignment-source-2",
+        component_kind="annotation",
+        component_locator={"object_id": "obj-1"},
+        operation="replace",
+        panel_id="panel-1",
+        replacement_locator={"object_id": "obj-old"},
+    )
+    assert task.task_status == "selected"
+    mutations = (
+        task.claim,
+        lambda: task.assign("annotator-2"),
+        task.release,
+        task.submit,
+    )
+    for mutation in mutations:
+        mutation()
+        assert task.id == "branch-task-1"
+        assert task.parent_item_id == "parent-item-1"
+        assert task.assignment_id == "assignment-1"
+        assert task.task_kind == "consensus_branch"
+        assert task.consensus_summary == {
+            "agreement": 0.75,
+            "task_status": task.task_status,
+        }
+    client.close()
+
+
+@pytest.mark.parametrize("operation", ["remove", "merge"])
+def test_copy_consensus_component_rejects_unknown_operations(operation):
+    task = WorkflowTask(
+        id="task-1",
+        project_id="p1",
+        stage_id="review",
+        stage_type="review",
+        status="review",
+        task_status="new",
+        priority=0,
+        raw={},
+        _client=object(),
+    )
+
+    with pytest.raises(ValueError, match="operation"):
+        task.copy_consensus_component(
+            source_assignment_id="assignment-1",
+            component_kind="annotation",
+            component_locator={"object_id": "obj-1"},
+            operation=operation,
+        )
+
+
+def test_consensus_task_detail_and_mutation_accept_task_id_without_uuid():
+    def detail_envelope(task_status):
+        return {
+            "task": {
+                "task_id": "branch-task-1",
+                "project_id": "p1",
+                "current_stage": {"id": "consensus", "type": "review"},
+                "status": "consensus",
+                "priority": 0,
+                "task_kind": "consensus_branch",
+                "parent_item_id": "parent-item-1",
+                "assignment_id": "assignment-1",
+            },
+            "queue": {"task_status": task_status},
+            "consensus_summary": {"agreement": 0.75},
+        }
+
+    def handler(request):
+        if request.url.path == "/api/sdk/workflow-tasks/branch-task-1/":
+            return httpx.Response(200, json=detail_envelope("new"))
+        if request.url.path == "/api/sdk/workflow-tasks/branch-task-1/claim/":
+            return httpx.Response(200, json=detail_envelope("claimed"))
+        raise AssertionError(request.url)
+
+    client = client_with_handler(handler)
+    task = client.get_workflow_task("branch-task-1")
+    assert task.id == "branch-task-1"
+    task.claim()
+    assert task.id == "branch-task-1"
+    assert task.task_status == "claimed"
+    client.close()
+
+
+def test_consensus_queue_parser_accepts_alias_without_overriding_canonical_summary():
+    queue_row = {
+        "task_id": "branch-task-1",
+        "item_id": "parent-item-1",
+        "stage_id": "consensus",
+        "stage_type": "review",
+        "status": "consensus",
+        "task_status": "new",
+        "priority": 0,
+        "task_kind": "consensus_branch",
+    }
+    canonical_summary = {"agreement": 0.9}
+    alias_summary = {"agreement": 0.4}
+
+    canonical_task = WorkflowTask._from_queue(
+        object(),
+        "p1",
+        {
+            **queue_row,
+            "consensus_summary": canonical_summary,
+            "consensus": alias_summary,
+        },
+    )
+    alias_task = WorkflowTask._from_queue(
+        object(),
+        "p1",
+        {**queue_row, "consensus": alias_summary},
+    )
+
+    assert canonical_task.consensus_summary == canonical_summary
+    assert alias_task.consensus_summary == alias_summary
 
 
 def test_folder_navigation_supports_children_and_all():

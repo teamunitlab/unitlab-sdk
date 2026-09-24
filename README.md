@@ -360,6 +360,18 @@ annotation_path = release.download(split="train", dest="./release-annotations")
 files_folder = release.download_files(dest="./release-files")
 ```
 
+`client.releases.create()` waits until the Release is ready. To return immediately
+and wait later:
+
+```python
+release = client.releases.create(project, wait=False)
+release.wait(timeout=7200)  # Wait before downloading.
+```
+
+Check progress with `release.refresh()`, then read `release.status` and
+`release.progress`. Lists show ready Releases; use `client.releases.get(release_id)`
+to check one still being prepared.
+
 Release item download tokens are persistent Unitlab URLs. For files stored in
 customer cloud storage, the URL redirects to a signed target URL; only that target
 URL is temporary.
@@ -421,8 +433,9 @@ unitlab dataset unpublished-changes DATASET_ID
 unitlab dataset publish DATASET_ID --title "Initial snapshot"
 unitlab dataset versions DATASET_ID
 
-# Releases
+# Releases (create returns immediately; add --wait to wait until ready)
 unitlab release create PROJECT_ID --format UUEF --splits train=100
+unitlab release wait RELEASE_ID --timeout 7200
 unitlab release list
 unitlab release detail RELEASE_ID
 unitlab release download RELEASE_ID --split-type train --dest ./release-annotations

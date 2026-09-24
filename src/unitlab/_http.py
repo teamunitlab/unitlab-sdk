@@ -7,6 +7,7 @@ import httpx
 
 from .exceptions import (
     AuthenticationError,
+    ConflictError,
     NetworkError,
     NotFoundError,
     PermissionDeniedError,
@@ -65,6 +66,10 @@ def raise_for_response(response: httpx.Response) -> None:
         if code == "permission_denied":
             raise PermissionDeniedError(message or "Forbidden", error, code)
         raise SubscriptionError(message or "Forbidden", error, code)
+    # Must stay above the message-based NotFound fallback below: a 409 detail
+    # can mention "not found" and still has to surface as a conflict.
+    if response.status_code == 409:
+        raise ConflictError(message, error, code)
     if response.status_code == 404 or "not found" in message.lower():
         raise NotFoundError(message, error, code)
     raise NetworkError(message, error, code)

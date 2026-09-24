@@ -5,8 +5,9 @@ import pytest
 from typer.testing import CliRunner
 
 from unitlab import UnitlabError, __version__
-from unitlab.cli import _jsonable, app, main
+from unitlab.cli import _jsonable, _summary, app, main
 from unitlab.resources.projects import Project
+from unitlab.resources.workflow import WorkflowTask
 
 runner = CliRunner()
 
@@ -164,6 +165,25 @@ def test_human_output_is_concise(monkeypatch):
     assert "id=project-1" in result.stdout
     assert "name=Review" in result.stdout
     assert "Project(" not in result.stdout
+
+
+def test_workflow_task_cli_serializes_and_summarizes_task_kind():
+    task = WorkflowTask(
+        id="branch-task-1",
+        project_id="p1",
+        stage_id="consensus",
+        stage_type="review",
+        status="consensus",
+        task_status="new",
+        priority=0,
+        raw={},
+        _client=object(),
+        task_kind="consensus_branch",
+    )
+
+    value = _jsonable(task)
+    assert value["task_kind"] == "consensus_branch"
+    assert "task_kind=consensus_branch" in _summary(value)
 
 
 def test_dataset_list_only_lists_datasets(monkeypatch):
@@ -581,6 +601,54 @@ def test_release_annotation_download_passes_destination(monkeypatch, tmp_path):
     assert result.exit_code == 0
     assert calls == [("train", destination)]
     assert result.stdout.strip() == str(destination / "release.zip")
+
+
+def test_release_create_returns_immediately_unless_wait_is_requested(monkeypatch):
+    calls = []
+
+    def create(_project, **kwargs):
+        calls.append((kwargs["wait"], kwargs["timeout"]))
+        return {"id": "r1", "status": "pending"}
+
+    client = SimpleNamespace(
+        projects=SimpleNamespace(get=lambda project_id: project_id),
+        releases=SimpleNamespace(create=create),
+    )
+    monkeypatch.setattr("unitlab.cli.get_client", lambda _api_key: client)
+    command = ["release", "create", "00000000-0000-0000-0000-000000000001"]
+
+    default = runner.invoke(app, command)
+    waited = runner.invoke(app, [*command, "--wait", "--timeout", "30"])
+
+    assert (default.exit_code, waited.exit_code) == (0, 0)
+    assert "status: pending" in default.stdout
+    assert calls == [(False, 7200), (True, 30)]
+
+
+def test_release_wait_waits_on_the_fetched_release(monkeypatch):
+    calls = []
+
+    class Release:
+        @staticmethod
+        def wait(**kwargs):
+            calls.append(kwargs)
+            return {"id": "r1", "status": "ready"}
+
+    def get(release_id):
+        calls.append(release_id)
+        return Release()
+
+    monkeypatch.setattr(
+        "unitlab.cli.get_client",
+        lambda _api_key: SimpleNamespace(releases=SimpleNamespace(get=get)),
+    )
+    release_id = "00000000-0000-0000-0000-000000000001"
+
+    result = runner.invoke(app, ["release", "wait", release_id, "--timeout", "30"])
+
+    assert result.exit_code == 0
+    assert calls == [release_id, {"timeout": 30}]
+    assert "status: ready" in result.stdout
 
 
 def test_console_entrypoint_prints_concise_sdk_errors(monkeypatch, capsys):

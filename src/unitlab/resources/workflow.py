@@ -162,6 +162,10 @@ class WorkflowTask:
     data_type: str = ""
     available_actions: list[str] = field(default_factory=list)
     move_targets: list[dict[str, Any]] = field(default_factory=list)
+    task_kind: str = "item_state"
+    parent_item_id: str | None = None
+    assignment_id: str | None = None
+    consensus_summary: dict[str, Any] | None = None
 
     @classmethod
     def _from_queue(
@@ -170,8 +174,13 @@ class WorkflowTask:
         project_id: str,
         raw: dict[str, Any],
     ) -> WorkflowTask:
+        consensus_summary = (
+            raw["consensus_summary"]
+            if "consensus_summary" in raw
+            else raw.get("consensus")
+        )
         return cls(
-            id=str(raw["item_id"]),
+            id=str(raw.get("task_id") or raw["item_id"]),
             project_id=project_id,
             stage_id=str(raw.get("stage_id", "")),
             stage_type=str(raw.get("stage_type", "")),
@@ -193,6 +202,14 @@ class WorkflowTask:
                 else None
             ),
             data_type=_data_type_name(raw.get("generic_type")),
+            task_kind=str(raw.get("task_kind") or "item_state"),
+            parent_item_id=(
+                str(raw["parent_item_id"]) if raw.get("parent_item_id") else None
+            ),
+            assignment_id=(
+                str(raw["assignment_id"]) if raw.get("assignment_id") else None
+            ),
+            consensus_summary=consensus_summary,
         )
 
     @classmethod
@@ -206,8 +223,15 @@ class WorkflowTask:
         task = raw.get("task", raw)
         queue = raw.get("queue") or {}
         current_stage = task.get("current_stage") or {}
+        # Consensus task details retain the parent resource; the queue identifies
+        # the private branch. Explicit null also matters when an assignee is cleared.
+        datasource_id = queue.get("datasource_id", task.get("datasource_id"))
+        assigned_to_id = queue.get("assigned_to_id", task.get("assigned_to_id"))
+        consensus_summary = raw.get("consensus_summary")
+        if consensus_summary is None:
+            consensus_summary = task.get("consensus_summary")
         return cls(
-            id=str(task["uuid"]),
+            id=str(task.get("task_id") or task["uuid"]),
             project_id=str(task.get("project_id") or project_id),
             stage_id=str(current_stage.get("id", "")),
             stage_type=str(current_stage.get("type", "")),
@@ -217,12 +241,8 @@ class WorkflowTask:
             raw=raw,
             _client=client,
             name=str(queue.get("name", "")),
-            assigned_to_id=(
-                str(task["assigned_to_id"]) if task.get("assigned_to_id") else None
-            ),
-            datasource_id=(
-                str(task["datasource_id"]) if task.get("datasource_id") else None
-            ),
+            assigned_to_id=str(assigned_to_id) if assigned_to_id else None,
+            datasource_id=str(datasource_id) if datasource_id else None,
             data_group_id=(
                 str(task.get("project_data_group_id") or task.get("data_group_id"))
                 if task.get("project_data_group_id") or task.get("data_group_id")
@@ -233,6 +253,14 @@ class WorkflowTask:
                 str(value) for value in raw.get("available_actions", [])
             ],
             move_targets=list(raw.get("move_targets", [])),
+            task_kind=str(task.get("task_kind") or "item_state"),
+            parent_item_id=(
+                str(task["parent_item_id"]) if task.get("parent_item_id") else None
+            ),
+            assignment_id=(
+                str(task["assignment_id"]) if task.get("assignment_id") else None
+            ),
+            consensus_summary=consensus_summary,
         )
 
     @classmethod
@@ -269,6 +297,44 @@ class WorkflowTask:
             self._client._api.post(
                 f"/api/sdk/workflow-tasks/{self.id}/priority/",
                 json={"priority": priority},
+            )
+        )
+
+    def get_consensus_comparison(self) -> dict[str, Any]:
+        return self._client._api.get(
+            f"/api/sdk/workflow-tasks/{self.id}/consensus-comparison/"
+        )
+
+    def copy_consensus_component(
+        self,
+        *,
+        source_assignment_id: str,
+        component_kind: str,
+        component_locator: dict[str, Any],
+        operation: str = "add",
+        panel_id: str | None = None,
+        replacement_locator: dict[str, Any] | None = None,
+    ) -> WorkflowTask:
+        if operation not in {"add", "replace"}:
+            raise ValueError("operation must be 'add' or 'replace'")
+
+        payload: dict[str, Any] = {
+            "source_assignment_id": source_assignment_id,
+            "component_kind": component_kind,
+            "component_locator": component_locator,
+            "operation": operation,
+            "idempotency_key": str(uuid4()),
+        }
+        if panel_id is not None:
+            payload["panel_id"] = panel_id
+        if replacement_locator is not None:
+            payload["replacement_locator"] = replacement_locator
+        if self.stage_id:
+            payload["expected_stage_id"] = self.stage_id
+        return self._replace(
+            self._client._api.post(
+                f"/api/sdk/workflow-tasks/{self.id}/consensus-selections/",
+                json=payload,
             )
         )
 

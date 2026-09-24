@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import uuid
+from collections.abc import Awaitable, Callable
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import suppress
 from pathlib import Path
@@ -198,16 +199,21 @@ async def _put_tiled_part(
     url: str,
     start: int,
     size: int,
+    get_url: Callable[[str | None], Awaitable[str]] | None = None,
 ) -> str:
     last_error: Exception | None = None
+    rejected_url = None
     for attempt in range(TILED_PART_MAX_ATTEMPTS):
         try:
             async with semaphore:
+                if get_url is not None:
+                    url = await get_url(rejected_url)
                 response = await client.put(
                     url,
                     content=_FilePartStream(path, start, size),
                     headers={"Content-Length": str(size)},
                 )
+                rejected_url = url if response.status_code == 403 else None
             response.raise_for_status()
             etag = response.headers.get("etag")
             if not etag:
@@ -272,6 +278,55 @@ async def _upload_tiled_file(
             not part.get("url") for part in part_urls
         ):
             raise ValueError("invalid multipart part URLs")
+        loop = asyncio.get_running_loop()
+        expires_in = float(initiated.get("expires_in", 43200))
+        renew_at = loop.time() + expires_in * 0.75
+        renewal_lock = asyncio.Lock()
+        urls = {int(part["part_number"]): str(part["url"]) for part in part_urls}
+
+        async def get_url(number: int, rejected_url: str | None = None) -> str:
+            nonlocal upload_token, renew_at
+            async with renewal_lock:
+                if loop.time() >= renew_at or (
+                    rejected_url is not None and urls[number] == rejected_url
+                ):
+                    try:
+                        response = await api_client.post(
+                            f"{endpoint}/refresh/",
+                            json={
+                                "upload_token": upload_token,
+                                "part_numbers": list(urls),
+                            },
+                        )
+                        response.raise_for_status()
+                        fresh = _response_json(response)
+                        new_urls = {
+                            int(part["part_number"]): str(part["url"])
+                            for part in fresh["part_urls"]
+                        }
+                        if new_urls.keys() != urls.keys() or not fresh["upload_token"]:
+                            raise ValueError("missing refreshed multipart fields")
+                        urls.update(new_urls)
+                        upload_token = str(fresh["upload_token"])
+                        renew_at = loop.time() + float(fresh["expires_in"]) * 0.75
+                    except (httpx.HTTPError, KeyError, TypeError, ValueError) as exc:
+                        raise NetworkError("Multipart URL renewal failed", exc) from exc
+                return urls[number]
+
+        async def keep_upload_active():
+            # A single slow PUT can outlive the token. Renew independently of
+            # part completion; transient failures retry at the next interval.
+            event = asyncio.Event()
+            while True:
+                try:
+                    await asyncio.wait_for(
+                        event.wait(), timeout=max(1, min(3600, expires_in / 4))
+                    )
+                except asyncio.TimeoutError:
+                    with suppress(NetworkError):
+                        await get_url(1)
+
+        renewal_task = asyncio.create_task(keep_upload_active())
         part_tasks = [
             asyncio.create_task(
                 _put_tiled_part(
@@ -279,6 +334,9 @@ async def _upload_tiled_file(
                     part_semaphore,
                     path,
                     url=str(part["url"]),
+                    get_url=lambda rejected, number=int(part["part_number"]): get_url(
+                        number, rejected
+                    ),
                     start=(int(part["part_number"]) - 1) * part_size,
                     size=min(
                         part_size,
@@ -290,11 +348,16 @@ async def _upload_tiled_file(
         ]
         try:
             parts = await asyncio.gather(*part_tasks)
+            await get_url(1)
         except Exception:
             for task in part_tasks:
                 task.cancel()
             await asyncio.gather(*part_tasks, return_exceptions=True)
             raise
+        finally:
+            renewal_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await renewal_task
     except (KeyError, TypeError, ValueError, NetworkError) as exc:
         if upload_token:
             await _abort_tiled_upload(api_client, endpoint, upload_token)
@@ -406,7 +469,7 @@ def _project_files(
     } or known_extensions()
     files = collect_files(source, accepted)
     max_sizes = {
-        str(key): int(value)
+        str(key): None if value is None else int(value)
         for key, value in (upload_info.get("max_file_sizes") or {}).items()
     }
     project_type = upload_info.get("generic_type")
@@ -418,7 +481,7 @@ def _project_files(
             generic_type or detect_generic_type(path.name) or project_type
         )
         max_size = max_sizes.get(file_generic_type)
-        if max_size is None and project_type and fallback is not None:
+        if file_generic_type not in max_sizes and project_type and fallback is not None:
             max_size = int(fallback)
         if max_size is None or path.stat().st_size <= max_size:
             result.append(path)

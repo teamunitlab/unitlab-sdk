@@ -32,6 +32,16 @@ class NotFoundError(NetworkError):
     """Raised when the requested resource is not found."""
 
 
+class ConflictError(NetworkError):
+    """Raised when the API answers 409 because the resource is in a conflicting state.
+
+    Subclasses NetworkError so callers that already catch NetworkError keep
+    working; ``code`` tells the cases apart (``release_in_progress`` for a
+    second create while one is being prepared, ``release_not_ready`` for a
+    download before the Release is ready).
+    """
+
+
 class SubscriptionError(NetworkError):
     """Raised when a subscription error occurs."""
 
