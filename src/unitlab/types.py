@@ -20,6 +20,11 @@ class ProcessingStatus:
     processing: int
     failed: int
     raw: dict[str, Any] = field(default_factory=dict, repr=False, compare=False)
+    # Set for a lidar scene only: why its processing failed, and how many
+    # frames it has once processing ended. Declared after ``raw`` so existing
+    # positional construction keeps its meaning.
+    error: str | None = None
+    frame_count: int | None = None
 
     @classmethod
     def _from_raw(cls, raw: dict[str, Any]) -> ProcessingStatus:
@@ -30,6 +35,10 @@ class ProcessingStatus:
             processing=int(raw.get("processing", 0)),
             failed=int(raw.get("failed", 0)),
             raw=raw,
+            error=str(raw["error"]) if raw.get("error") else None,
+            frame_count=(
+                int(raw["frame_count"]) if raw.get("frame_count") is not None else None
+            ),
         )
 
 

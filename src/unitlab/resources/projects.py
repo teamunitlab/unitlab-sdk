@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from .. import _uploader
+from .. import _scene_uploader, _uploader
 from .._waiter import wait_for_processing
 from ..types import (
     AttachPreview,
@@ -259,6 +259,7 @@ class Project:
         generic_type: str | None = None,
         primary_column: str | None = None,
         batch_size: int = 100,
+        split_sensor_folders: bool = False,
     ) -> UploadBatch:
         """Upload local files into this Project.
 
@@ -267,26 +268,48 @@ class Project:
             fps: Frame rate used for uploaded video.
             generic_type: Explicit upload family, such as ``tabular`` for CSV
                 row mode. Omitted CSV uploads remain pending until configured
-                in the target project.
+                in the target project. ``pointcloud`` uploads lidar scenes:
+                ``source`` is then a scene file (``.zip``, ``.pcd``, ``.bin``,
+                ``.ply``) or a directory holding one or more scenes, and every
+                scene becomes ONE item. Without it scene files are skipped.
+                ``unitlab.detect_scenes(source)`` shows what would be sent.
             primary_column: Preferred row-mode CSV text column.
             batch_size: Files scheduled per local upload batch.
+            split_sensor_folders: Lidar scenes only. Read sensor folders that
+                share file names as one scene each instead of one scene with
+                several sensors (see ``unitlab.detect_scenes``).
 
         Returns:
             Local upload results and the server-side Batch Queue ID. Server
             processing may still be running. Declared ``tabular`` uploads are
             accepted asynchronously and their datasource IDs are returned
-            immediately.
+            immediately. For lidar scenes every count is in scenes.
         """
-        result, session_id = _uploader.upload_project(
-            self._client._api,
-            self.id,
-            source,
-            fps=fps,
-            generic_type=generic_type,
-            primary_column=primary_column,
-            batch_size=batch_size,
-            show_progress=sys.stderr.isatty(),
-        )
+        if generic_type == _scene_uploader.SCENE_TYPE:
+            # A scene has its own routes and no fallback to the plain upload;
+            # fps, primary_column and batch_size do not apply to it.
+            result, session_id = _scene_uploader.upload_project_scenes(
+                self._client._api,
+                self.id,
+                source,
+                split_sensor_folders=split_sensor_folders,
+                show_progress=sys.stderr.isatty(),
+            )
+        else:
+            if split_sensor_folders:
+                raise ValueError(
+                    'split_sensor_folders applies only to generic_type="pointcloud".'
+                )
+            result, session_id = _uploader.upload_project(
+                self._client._api,
+                self.id,
+                source,
+                fps=fps,
+                generic_type=generic_type,
+                primary_column=primary_column,
+                batch_size=batch_size,
+                show_progress=sys.stderr.isatty(),
+            )
         batch = UploadBatch(
             project_id=self.id,
             batch_queue_id=session_id,
@@ -462,6 +485,33 @@ class Project:
             f"/api/sdk/projects/{self.id}/upload-sessions/{batch_queue_id}/"
         )
         return BatchQueue._from_raw(self._client, self.id, row)
+
+    def scene_status(self, item_id: str) -> ProcessingStatus:
+        """Processing status of one lidar scene of this Project.
+
+        Works for a failed scene too, which ``data_units()`` does not list:
+        take ``item_id`` from the upload result (``data_item_ids``) or from the
+        Batch Queue's ``data()``. ``error`` says why processing failed and
+        ``frame_count`` is set once it ended.
+        """
+        return ProcessingStatus._from_raw(
+            self._client._api.get(
+                f"/api/sdk/projects/{self.id}/pointcloud-scenes/"
+                f"{identifier(item_id)}/status/"
+            )
+        )
+
+    def retry_scene(self, item_id: str) -> dict[str, Any]:
+        """Process a failed lidar scene again.
+
+        Returns the server's reply: ``status`` is ``processing`` when the
+        scene was queued, ``completed`` when a finished scene with the same
+        content was adopted and nothing had to run.
+        """
+        return self._client._api.post(
+            f"/api/sdk/projects/{self.id}/pointcloud-scenes/"
+            f"{identifier(item_id)}/retry/"
+        )
 
 
 @dataclass

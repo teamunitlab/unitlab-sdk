@@ -27,6 +27,15 @@ TILED_PART_CONCURRENCY = 3
 TILED_PART_MAX_ATTEMPTS = 3
 TILED_PART_RETRY_DELAY_SECONDS = 2
 TILED_MULTIPART_MIN_TIFF_BYTES = 8 * 1024 * 1024
+# Video, medical, audio and PDF files above DIRECT_UPLOAD_MIN_BYTES go straight
+# to storage through the same multipart endpoints as tiled files. The form POST
+# accepts them only up to DIRECT_FAMILY_SIMPLE_UPLOAD_MAX_BYTES: Unitlab's
+# production API sits behind a proxy that rejects larger request bodies, so the
+# route is chosen by size up front, never by trying the POST first. 64 MiB is
+# one multipart part and leaves room under that cap for the form's overhead.
+DIRECT_UPLOAD_GENERIC_TYPES = {"video", "medical", "audio", "document"}
+DIRECT_UPLOAD_MIN_BYTES = 64 * 1024 * 1024
+DIRECT_FAMILY_SIMPLE_UPLOAD_MAX_BYTES = 100 * 1024 * 1024
 AMBIGUOUS_TIFF_EXTENSIONS = {"tif", "tiff"}
 GEOSPATIAL_TILED_EXTENSIONS = {
     "jp2",
@@ -89,6 +98,58 @@ def known_extensions() -> set[str]:
     return {value for values in EXTENSIONS_BY_GENERIC_TYPE.values() for value in values}
 
 
+def _has_dicom_marker(path: Path) -> bool:
+    """Return True for a DICOM file: the format puts ``DICM`` at byte 128."""
+    try:
+        with path.open("rb") as handle:
+            handle.seek(128)
+            return handle.read(4) == b"DICM"
+    except OSError:
+        return False
+
+
+def detect_file_generic_type(path: Path) -> str | None:
+    """Return a file's data type from its name, or from its content for DICOM.
+
+    DICOM files are commonly named without a usable extension (``IM00001``, or
+    a UID whose last dotted part only looks like one), so the name cannot
+    identify them; the ``DICM`` marker can. Only a file whose extension no data
+    type lists is opened, and only four bytes of it are read.
+    """
+    detected = detect_generic_type(path.name)
+    if detected is not None:
+        return detected
+    if extension_for_filename(path.name) in known_extensions():
+        # An ambiguous TIFF: the server classifies it from its content.
+        return None
+    return "medical" if _has_dicom_marker(path) else None
+
+
+def _declared_type(path: Path, generic_type: str | None) -> str | None:
+    """Return the data type to state when a direct upload is initiated, if any.
+
+    The caller's own ``generic_type`` wins. Otherwise only a DICOM file found
+    by its marker is declared: the server cannot tell from such a name, and at
+    ``initiate`` it has no bytes to look at. The form upload gets no such
+    field: the server checks the marker itself there, and its form accepts a
+    declared type only for the data types a caller really chooses (CSV
+    readings, tiled imagery).
+    """
+    if generic_type is not None:
+        return generic_type
+    if detect_generic_type(path.name) is None and (
+        detect_file_generic_type(path) == "medical"
+    ):
+        return "medical"
+    return None
+
+
+def _declared_fields(path: Path, generic_type: str | None) -> dict[str, Any] | None:
+    """Return the ``initiate`` fields that state this file's data type, if any."""
+    declared = _declared_type(path, generic_type)
+    return {"generic_type": declared} if declared else None
+
+
 def collect_files(source: str | Path, accepted: set[str] | None = None) -> list[Path]:
     source_path = Path(source).expanduser()
     if source_path.is_file():
@@ -98,7 +159,13 @@ def collect_files(source: str | Path, accepted: set[str] | None = None) -> list[
     else:
         raise ValueError(f"Source {source_path} does not exist")
     allowed = accepted if accepted is not None else known_extensions()
-    return [path for path in candidates if extension_for_filename(path.name) in allowed]
+    return [
+        path
+        for path in candidates
+        if extension_for_filename(path.name) in allowed
+        # A DICOM file without a usable extension, where medical is accepted.
+        or ("dcm" in allowed and detect_file_generic_type(path) == "medical")
+    ]
 
 
 def run_sync(coroutine):
@@ -191,6 +258,13 @@ def _should_use_tiled_multipart(path: Path) -> bool:
     )
 
 
+def _should_use_direct_upload(path: Path, generic_type: str | None) -> bool:
+    return (
+        generic_type in DIRECT_UPLOAD_GENERIC_TYPES
+        and path.stat().st_size > DIRECT_UPLOAD_MIN_BYTES
+    )
+
+
 async def _put_tiled_part(
     client: httpx.AsyncClient,
     semaphore: asyncio.Semaphore,
@@ -244,11 +318,14 @@ async def _upload_tiled_file(
     *,
     session_id: str | None = None,
     complete_fields: dict[str, Any] | None = None,
+    initiate_fields: dict[str, Any] | None = None,
+    fall_back_on_rejected_initiate: bool = False,
 ) -> dict[str, Any]:
     file_size = path.stat().st_size
     initiate = {
         "file_name": path.name,
         "file_size": file_size,
+        **(initiate_fields or {}),
     }
     if session_id:
         initiate["session_id"] = session_id
@@ -261,6 +338,10 @@ async def _upload_tiled_file(
     if response.status_code in (401, 403):
         raise_for_response(response)
     if response.status_code >= 400:
+        if fall_back_on_rejected_initiate:
+            # A server that predates direct upload for this family refuses the
+            # initiate; the form POST still accepts a file this size there.
+            raise _FallbackToSimpleUploadError(_extract_error_message(response))
         raise _TiledUploadRejectedError(_extract_error_message(response))
     initiated = _response_json(response)
     upload_token = str(initiated.get("upload_token") or "")
@@ -398,24 +479,44 @@ async def _upload_file(
     tiled_endpoint: str,
     session_id: str | None = None,
     complete_fields: dict[str, Any] | None = None,
+    generic_type: str | None = None,
+    initiate_fields: dict[str, Any] | None = None,
 ) -> tuple[dict[str, Any] | None, str | None]:
-    if _should_use_tiled_multipart(path):
+    direct = _should_use_direct_upload(path, generic_type)
+    if direct or _should_use_tiled_multipart(path):
         try:
-            return (
-                await _upload_tiled_file(
-                    api_client,
-                    storage_client,
-                    part_semaphore,
-                    tiled_endpoint,
-                    path,
-                    session_id=session_id,
-                    complete_fields=complete_fields,
-                ),
-                None,
+            payload = await _upload_tiled_file(
+                api_client,
+                storage_client,
+                part_semaphore,
+                tiled_endpoint,
+                path,
+                session_id=session_id,
+                complete_fields=complete_fields,
+                initiate_fields=initiate_fields if direct else None,
+                # Only while the form POST could still take the file; above
+                # that the initiate refusal is the answer to report.
+                fall_back_on_rejected_initiate=direct
+                and path.stat().st_size <= DIRECT_FAMILY_SIMPLE_UPLOAD_MAX_BYTES,
             )
+            if direct:
+                # Callers that treat form-POSTed files specially (medical
+                # series finalize) need to know this one took the other road.
+                payload["direct_upload"] = True
+            return payload, None
         except _FallbackToSimpleUploadError:
             pass
         except _TiledUploadRejectedError as exc:
+            return None, str(exc)
+        except NetworkError as exc:
+            # A part that would not upload fails THIS file, like a transport
+            # error on the form POST these families used before; the rest of
+            # the batch goes on and the caller still gets its UploadResult.
+            # Subclasses are answers that must stop the batch (an ambiguous
+            # completion, a plan or permission refusal) and keep propagating,
+            # as does everything for tiled files, whose behaviour is unchanged.
+            if not direct or type(exc) is not NetworkError:
+                raise
             return None, str(exc)
     return await _post_file(
         api_client,
@@ -472,17 +573,29 @@ def _project_files(
         str(key): None if value is None else int(value)
         for key, value in (upload_info.get("max_file_sizes") or {}).items()
     }
+    # `max_file_sizes` holds what a form POST accepts. A server with direct
+    # upload for video/medical/audio/PDF also reports the higher ceiling such a
+    # file may reach that way; a server without it reports nothing here, and
+    # the POST ceiling keeps applying.
+    direct_max_sizes = {
+        str(key): int(value)
+        for key, value in (upload_info.get("direct_max_file_sizes") or {}).items()
+    }
     project_type = upload_info.get("generic_type")
     fallback = upload_info.get("max_file_size")
     result = []
     failures = []
     for path in files:
         file_generic_type = (
-            generic_type or detect_generic_type(path.name) or project_type
+            generic_type or detect_file_generic_type(path) or project_type
         )
         max_size = max_sizes.get(file_generic_type)
         if file_generic_type not in max_sizes and project_type and fallback is not None:
             max_size = int(fallback)
+        if file_generic_type in direct_max_sizes and _should_use_direct_upload(
+            path, file_generic_type
+        ):
+            max_size = direct_max_sizes[file_generic_type]
         if max_size is None or path.stat().st_size <= max_size:
             result.append(path)
         else:
@@ -525,7 +638,8 @@ async def _upload_project_async(
                 tasks = []
                 generic_types = []
                 for path in chunk:
-                    file_generic_type = generic_type or detect_generic_type(path.name)
+                    file_generic_type = generic_type or detect_file_generic_type(path)
+                    declared_type = _declared_type(path, generic_type)
                     generic_types.append(file_generic_type)
                     fields = {"session_id": session_id}
                     if file_generic_type == "video":
@@ -534,6 +648,11 @@ async def _upload_project_async(
                         fields["generic_type"] = generic_type
                     if primary_column is not None:
                         fields["primary_column"] = primary_column
+                    initiate_fields: dict[str, Any] = {}
+                    if file_generic_type == "video":
+                        initiate_fields["fps"] = fps
+                    if declared_type is not None:
+                        initiate_fields["generic_type"] = declared_type
                     tasks.append(
                         _upload_file(
                             client,
@@ -548,10 +667,16 @@ async def _upload_project_async(
                                 f"/api/sdk/projects/{project_id}/tiled-uploads"
                             ),
                             session_id=session_id,
+                            generic_type=file_generic_type,
+                            initiate_fields=initiate_fields,
                         )
                     )
                 results = await asyncio.gather(*tasks, return_exceptions=True)
-                for path, generic_type, result in zip(
+                # `file_type`, not `generic_type`: reusing the parameter's name
+                # here overwrote the caller's declared family with the last
+                # file's detected one, so every later chunk was routed (and
+                # declared to the server) as that stale family.
+                for path, file_type, result in zip(
                     chunk, generic_types, results, strict=True
                 ):
                     progress.update(1)
@@ -575,7 +700,11 @@ async def _upload_project_async(
                         )
                         continue
                     responses.append(payload)
-                    if generic_type == "medical" and payload.get("datasource_id"):
+                    # Finalize groups the series files a form POST stored. A
+                    # direct upload is already a whole volume with no session
+                    # rows, and finalizing a batch of only those fails with
+                    # "No files found".
+                    if file_type == "medical" and not payload.get("direct_upload"):
                         successful_medical = True
                 if batch_error:
                     break
@@ -770,6 +899,8 @@ async def _upload_assets_async(
                         tags=tags,
                         custom_metadata=custom_metadata,
                     ),
+                    generic_type=generic_type or detect_file_generic_type(first),
+                    initiate_fields=_declared_fields(first, generic_type),
                 )
                 progress.update(1)
                 if error:
@@ -813,6 +944,10 @@ async def _upload_assets_async(
                                 tags=tags,
                                 custom_metadata=custom_metadata,
                             ),
+                            generic_type=(
+                                generic_type or detect_file_generic_type(file_path)
+                            ),
+                            initiate_fields=_declared_fields(file_path, generic_type),
                         )
                     )
                 for file_path, (payload, error) in zip(

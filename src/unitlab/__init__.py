@@ -1,6 +1,7 @@
 from importlib.metadata import version
 
 from ._grouping import tiles_from_template
+from ._scene_uploader import detect_scenes
 from .client import UnitlabClient
 from .exceptions import (
     AmbiguousUploadCompletionError,
@@ -102,5 +103,6 @@ __all__ = [
     "WorkflowStage",
     "WorkflowTask",
     "__version__",
+    "detect_scenes",
     "tiles_from_template",
 ]

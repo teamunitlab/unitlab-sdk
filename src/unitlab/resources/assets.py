@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from .. import _uploader
+from .. import _scene_uploader, _uploader
 from .._waiter import wait_for_status
 from ..exceptions import UnitlabError, ValidationError
 from ..types import AssetUploadResult, ProcessingStatus, _data_type_name
@@ -29,6 +29,7 @@ class AssetsNamespace(Namespace):
         defer_timeseries_configuration: bool = False,
         generic_type: str | None = None,
         primary_column: str | None = None,
+        split_sensor_folders: bool = False,
     ) -> AssetUploadResult:
         """Upload local files into workspace Assets.
 
@@ -43,26 +44,52 @@ class AssetsNamespace(Namespace):
                 when ``generic_type="timeseries"`` is explicitly selected.
             generic_type: Explicit upload family, such as ``tabular`` for CSV
                 row mode. Omitted CSV Assets remain family-neutral until they
-                are attached to a project.
+                are attached to a project. ``pointcloud`` uploads lidar
+                scenes: ``source`` is then a scene file (``.zip``, ``.pcd``,
+                ``.bin``, ``.ply``) or a directory holding one or more scenes,
+                and every scene becomes ONE Asset. Without it scene files are
+                skipped.
             primary_column: Preferred row-mode CSV text column.
+            split_sensor_folders: Lidar scenes only; see
+                ``unitlab.detect_scenes``.
 
         Returns:
             Successful Assets and per-file failures without discarding partial
             success.
         """
-        result, resolved_folder_id, folder_name = _uploader.upload_assets(
-            self._api,
-            source,
-            folder=folder,
-            folder_id=folder_id,
-            path=path,
-            tags=tags,
-            custom_metadata=custom_metadata,
-            defer_timeseries_configuration=defer_timeseries_configuration,
-            generic_type=generic_type,
-            primary_column=primary_column,
-            show_progress=sys.stderr.isatty(),
-        )
+        if generic_type == _scene_uploader.SCENE_TYPE:
+            # A scene has its own routes and no fallback to the plain upload.
+            result, resolved_folder_id, folder_name = (
+                _scene_uploader.upload_asset_scenes(
+                    self._api,
+                    source,
+                    folder=folder,
+                    folder_id=folder_id,
+                    path=path,
+                    tags=tags,
+                    custom_metadata=custom_metadata,
+                    split_sensor_folders=split_sensor_folders,
+                    show_progress=sys.stderr.isatty(),
+                )
+            )
+        else:
+            if split_sensor_folders:
+                raise ValueError(
+                    'split_sensor_folders applies only to generic_type="pointcloud".'
+                )
+            result, resolved_folder_id, folder_name = _uploader.upload_assets(
+                self._api,
+                source,
+                folder=folder,
+                folder_id=folder_id,
+                path=path,
+                tags=tags,
+                custom_metadata=custom_metadata,
+                defer_timeseries_configuration=defer_timeseries_configuration,
+                generic_type=generic_type,
+                primary_column=primary_column,
+                show_progress=sys.stderr.isatty(),
+            )
         assets = [
             Asset._from_raw(self._client, response["asset"])
             for response in result.responses
@@ -92,6 +119,26 @@ class AssetsNamespace(Namespace):
     def folder(self, folder_id: str) -> Folder:
         raw = self._api.get(f"/api/sdk/data-assets/folders/{folder_id}/")
         return Folder._from_raw(self._client, raw)
+
+    def asset(self, asset_id: str) -> Asset:
+        """An Asset handle by ID, for ``status()``, ``wait()`` and ``retry()``.
+
+        Built from the Asset's status, the one route that answers for a single
+        Asset; it carries the data type, which ``retry()`` needs to pick the
+        route. Other fields (file name, tags) stay empty: list the folder for
+        those.
+        """
+        raw = self._api.get(
+            f"/api/sdk/data-assets/assets/{identifier(asset_id)}/status/"
+        )
+        return Asset._from_raw(
+            self._client,
+            {
+                "pk": raw.get("asset_id") or identifier(asset_id),
+                "generic_type": raw.get("generic_type"),
+                "upload_status": raw.get("upload_status", ""),
+            },
+        )
 
     def create_folder(self, name: str, *, parent_id: str | None = None) -> Folder:
         payload: dict[str, Any] = {"name": name}
@@ -306,9 +353,14 @@ class Asset:
         return status
 
     def retry(self) -> dict[str, Any]:
-        raw = self._client._api.post(
-            f"/api/sdk/data-assets/assets/{self.id}/tiled-retry/"
+        # A lidar scene is processed by its own pipeline and has its own
+        # retry route; the tiled one refuses it.
+        route = (
+            "pointcloud-retry"
+            if self.data_type == _scene_uploader.SCENE_TYPE
+            else "tiled-retry"
         )
+        raw = self._client._api.post(f"/api/sdk/data-assets/assets/{self.id}/{route}/")
         self.upload_status = str(raw.get("status", "processing"))
         return raw
 

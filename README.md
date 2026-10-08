@@ -80,7 +80,8 @@ print(batch.uploaded, batch.batch_queue_id)
 
 The directory may mix images, video, audio, text, PDFs, DICOM, NIfTI, and NRRD.
 One call creates one Batch Queue. Call `batch.wait()` when the next operation
-depends on server-side processing.
+depends on server-side processing. Lidar scenes are uploaded with
+`generic_type="pointcloud"`; see [Lidar scenes](#lidar-scenes).
 
 ### 2. Curate in Assets, publish a dataset, and attach it
 
@@ -200,6 +201,76 @@ GeoTIFF and whole-slide files are detected automatically. Large tiled files
 upload directly to storage in bounded parts. Tiled processing can take hours,
 so use a longer timeout such as `batch.wait(timeout=25200)` when the next
 operation depends on the generated COG/DZI derivative.
+
+Video, medical (NIfTI, NRRD, DICOM), audio and PDF files larger than 64 MiB
+also upload directly to storage, up to 500 MiB each; smaller ones keep the
+ordinary upload. A large medical file becomes one volume on its own and is not
+grouped with other files of the batch into a series.
+
+DICOM files named without a usable extension (`IM00001`, or a UID) are found by
+their content when a folder is uploaded and are sent as medical; nothing needs
+to be renamed.
+
+### Lidar scenes
+
+A lidar scene is one item whatever it is made of. It is uploaded only when the
+type is named; without it `.pcd`, `.ply`, `.bin` and scene `.zip` files are
+skipped. The workspace needs lidar scenes enabled.
+
+```python
+from unitlab import detect_scenes
+
+# Look first: what would be uploaded, nothing is sent.
+for scene in detect_scenes("./recordings").scenes:
+    print(scene.name, scene.frame_count, scene.point_sensors, scene.cameras)
+
+batch = project.upload("./recordings", generic_type="pointcloud")
+batch.wait()
+
+for item_id in batch.data_item_ids:
+    status = project.scene_status(item_id)
+    print(status.status, status.frame_count, status.error)
+
+project.retry_scene(item_id)  # a failed scene, about a minute after it failed
+```
+
+What `source` may be:
+
+- One file: a `.pcd`, `.ply` or `.bin` cloud, or a `.zip` that contains such
+  frames or a `scene.json`. Any other `.zip` is refused.
+- A folder with a `scene.json`, or with the point clouds of one sensor
+  (`drive_01/lidar/000.pcd`, ...). Image folders whose file names match the
+  frames become its cameras (`drive_01/cam_front/000.jpg`).
+- A folder with one subfolder per sensor that share file names. This is read as
+  one scene with several sensors; pass `split_sensor_folders=True` when each
+  folder is a recording of its own.
+- A folder that holds several such scenes: each one is uploaded as its own
+  item. Scene files left over in the folder are one scene each.
+- A nuScenes dataset (the folder with `samples/` and `v1.0-*/`): one scene per
+  recording, key frames only, with the calibration taken from its tables.
+
+Other files in the folder are not uploaded by this call; upload the folder once
+more without the type for ordinary media. A scene is limited to 20 GiB and
+1,000 frames, and one data unit is used per frame.
+
+`batch.wait()` covers scenes like any other upload. A failed scene is not in
+`project.data_units()`; find it in the Batch Queue (`queue.data()`) and ask
+`project.scene_status(item_id)` for the reason.
+
+Scenes go into Assets the same way, and the existing Asset methods apply:
+
+```python
+result = client.assets.upload(
+    "./recordings", generic_type="pointcloud", folder="Lidar"
+)
+asset = result.assets[0]
+status = asset.wait()          # status.frame_count, status.error
+asset.retry()                  # a failed scene
+asset = client.assets.asset("ASSET_ID")  # a handle by ID, for status and retry
+```
+
+`release.download_files()` writes a scene that was uploaded as a folder under
+`<item file name>/` with the paths it was uploaded with.
 
 ### Data Units and project lifecycle
 
@@ -390,6 +461,12 @@ unitlab project sources PROJECT_ID
 unitlab project detach-source PROJECT_ID SOURCE_LINK_ID --preview
 unitlab project upload PROJECT_ID --source ./data
 unitlab project upload PROJECT_ID --source ./maps
+unitlab project upload PROJECT_ID --source ./recordings --type pointcloud --dry-run
+unitlab project upload PROJECT_ID --source ./recordings --type pointcloud
+unitlab project upload PROJECT_ID --source ./rig --type pointcloud \
+  --split-sensor-folders
+unitlab project scene-status PROJECT_ID ITEM_ID
+unitlab project scene-retry PROJECT_ID ITEM_ID
 unitlab batch-queue list PROJECT_ID
 unitlab batch-queue detail PROJECT_ID BATCH_QUEUE_ID
 unitlab batch-queue status PROJECT_ID BATCH_QUEUE_ID
@@ -405,6 +482,9 @@ unitlab project attach PROJECT_ID --dataset-version DATASET_ID:2
 # Assets
 unitlab assets upload ./data --folder "Raw data" --tag incoming
 unitlab assets upload ./slides --folder "Slides"
+unitlab assets upload ./recordings --folder "Lidar" --type pointcloud
+unitlab assets status ASSET_ID
+unitlab assets retry ASSET_ID
 
 # Folders
 unitlab folders create "Raw data"

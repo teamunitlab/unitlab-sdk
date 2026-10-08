@@ -14,6 +14,7 @@ import typer
 
 from . import __version__, _config
 from ._grouping import tiles_from_template
+from ._scene_uploader import SCENE_TYPE, detect_scenes
 from .client import UnitlabClient
 from .exceptions import UnitlabError
 from .ontology import OntologyStructure
@@ -65,6 +66,29 @@ API_KEY = Annotated[
     ),
 ]
 JSON_OUTPUT = Annotated[bool, typer.Option("--json", help="Print JSON output")]
+# Shared by `project upload` and `assets upload`. Lidar scenes are uploaded only
+# when the type is named; without it both commands behave as before.
+DATA_TYPE = Annotated[
+    str | None,
+    typer.Option(
+        "--type",
+        help="Upload as this data type; pointcloud uploads lidar scenes",
+    ),
+]
+DRY_RUN = Annotated[
+    bool,
+    typer.Option(
+        "--dry-run",
+        help="List the lidar scenes that would be uploaded and send nothing",
+    ),
+]
+SPLIT_SENSOR_FOLDERS = Annotated[
+    bool,
+    typer.Option(
+        "--split-sensor-folders",
+        help="Read each sensor folder of a lidar scene as a scene of its own",
+    ),
+]
 
 
 class DownloadType(str, Enum):
@@ -82,6 +106,118 @@ EMBEDDING_UPLOAD_BATCH_SIZE = 1000
 
 def get_client(api_key: str | None) -> UnitlabClient:
     return UnitlabClient(api_key=api_key)
+
+
+def _scene_options(
+    data_type: str | None, dry_run: bool, split_sensor_folders: bool
+) -> dict[str, Any]:
+    """Keyword arguments ``upload()`` gets for ``--type`` and the scene flags.
+
+    Only what was given is passed on, so an upload without these options calls
+    ``upload()`` exactly as it did before they existed.
+    """
+    if (dry_run or split_sensor_folders) and data_type != SCENE_TYPE:
+        raise typer.BadParameter(
+            f"--dry-run and --split-sensor-folders need --type {SCENE_TYPE}"
+        )
+    options: dict[str, Any] = {}
+    if data_type is not None:
+        options["generic_type"] = data_type
+    if split_sensor_folders:
+        options["split_sensor_folders"] = True
+    return options
+
+
+def _format_bytes(size: float) -> str:
+    for unit in ("B", "KiB", "MiB"):
+        if size < 1024:
+            return f"{size:.0f} B" if unit == "B" else f"{size:.1f} {unit}"
+        size /= 1024
+    return f"{size:.1f} GiB"
+
+
+def _emit_scene_preview(
+    source: Path, split_sensor_folders: bool, json_output: bool
+) -> None:
+    """Print what ``--type pointcloud`` would upload from ``source``.
+
+    The CLI's replacement for the browser's confirmation dialog: which scenes
+    were found, their frames, sensors and cameras, the warnings the dialog
+    shows (files a dataset names but the folder lacks, image folders left out
+    as cameras), and whether a scene could also be read as one scene per sensor
+    folder. Nothing is sent and no API key is needed.
+    """
+    detection = detect_scenes(source, split_sensor_folders=split_sensor_folders)
+    scenes = detection.scenes
+    if json_output:
+        emit(
+            {
+                "scenes": [
+                    {
+                        "name": scene.name,
+                        "source": scene.source,
+                        "frame_count": scene.frame_count,
+                        "point_sensors": scene.point_sensors,
+                        "cameras": scene.cameras,
+                        "file_count": len(scene.files),
+                        "total_bytes": scene.total_bytes,
+                        "missing_files": scene.missing_files,
+                        "notes": scene.notes,
+                        "split_scenes": len(scene.split.scenes) if scene.split else 0,
+                    }
+                    for scene in scenes
+                ],
+                "unused_files": detection.unused_files,
+                "other_files": len(detection.other_files),
+            },
+            True,
+        )
+        return
+    noun = "scene" if len(scenes) == 1 else "scenes"
+    typer.echo(f"{len(scenes)} {noun} found, nothing uploaded")
+    typer.echo("")
+    rows = []
+    for scene in scenes:
+        if scene.frame_count is None:
+            frames = "archive"
+        else:
+            frames = f"{scene.frame_count} frame{'' if scene.frame_count == 1 else 's'}"
+        rows.append(
+            (
+                scene.name or "-",
+                frames,
+                ", ".join(scene.point_sensors) or "-",
+                ", ".join(scene.cameras) or "-",
+                _format_bytes(scene.total_bytes),
+            )
+        )
+    # Each column as wide as its longest value, so the table lines up.
+    widths = [max(len(row[column]) for row in rows) for column in range(5)]
+    indent = " " * (widths[0] + 4)
+    for scene, (name, frames, sensors, cameras, size) in zip(scenes, rows, strict=True):
+        typer.echo(
+            f"  {name:<{widths[0]}}  {frames:>{widths[1]}}  {sensors:<{widths[2]}}  "
+            f"{cameras:<{widths[3]}}  {size:>{widths[4]}}"
+        )
+        if scene.split:
+            typer.echo(
+                f"{indent}can also be read as {len(scene.split.scenes)} scenes "
+                "(--split-sensor-folders)"
+            )
+        if scene.missing_files:
+            typer.echo(
+                f"{indent}{scene.missing_files} file(s) named by the dataset are "
+                "not in the folder"
+            )
+        for note in scene.notes:
+            typer.echo(f"{indent}{note}")
+    left_out = detection.unused_files + len(detection.other_files)
+    if left_out:
+        typer.echo("")
+        typer.echo(
+            f"  {left_out} other {'file' if left_out == 1 else 'files'} in these "
+            f"folders {'is' if left_out == 1 else 'are'} not part of a scene"
+        )
 
 
 def _parse_custom_metadata(
@@ -383,6 +519,32 @@ def project_data_unit(
     )
 
 
+@project_app.command(name="scene-status", help="Show a lidar scene's processing")
+def project_scene_status(
+    project_id: UUID,
+    item_id: UUID,
+    api_key: API_KEY = None,
+    json_output: JSON_OUTPUT = False,
+):
+    emit(
+        get_client(api_key).projects.get(str(project_id)).scene_status(str(item_id)),
+        json_output,
+    )
+
+
+@project_app.command(name="scene-retry", help="Process a failed lidar scene again")
+def project_scene_retry(
+    project_id: UUID,
+    item_id: UUID,
+    api_key: API_KEY = None,
+    json_output: JSON_OUTPUT = False,
+):
+    emit(
+        get_client(api_key).projects.get(str(project_id)).retry_scene(str(item_id)),
+        json_output,
+    )
+
+
 @project_app.command(name="sources", help="List attached project sources")
 def project_sources(
     project_id: UUID,
@@ -423,12 +585,20 @@ def upload(
     ],
     api_key: API_KEY = None,
     fps: Annotated[float, typer.Option(help="Frames per second for video")] = 1.0,
+    data_type: DATA_TYPE = None,
+    dry_run: DRY_RUN = False,
+    split_sensor_folders: SPLIT_SENSOR_FOLDERS = False,
     json_output: JSON_OUTPUT = False,
 ):
+    scene_options = _scene_options(data_type, dry_run, split_sensor_folders)
+    if dry_run:
+        _emit_scene_preview(source, split_sensor_folders, json_output)
+        return
     client = get_client(api_key)
     batch = client.projects.get(str(pk)).upload(
         source,
         fps=fps,
+        **scene_options,
     )
     if json_output:
         emit(
@@ -441,7 +611,8 @@ def upload(
             True,
         )
     else:
-        typer.echo(f"Uploaded {batch.uploaded} of {batch.total} files")
+        unit = "scenes" if data_type == SCENE_TYPE else "files"
+        typer.echo(f"Uploaded {batch.uploaded} of {batch.total} {unit}")
     if batch.failed:
         raise typer.Exit(code=1)
 
@@ -604,8 +775,15 @@ def assets_upload(
         help="Path to a JSON object or null applied to every uploaded Asset",
     ),
     api_key: API_KEY = None,
+    data_type: DATA_TYPE = None,
+    dry_run: DRY_RUN = False,
+    split_sensor_folders: SPLIT_SENSOR_FOLDERS = False,
     json_output: JSON_OUTPUT = False,
 ):
+    scene_options = _scene_options(data_type, dry_run, split_sensor_folders)
+    if dry_run:
+        _emit_scene_preview(source, split_sensor_folders, json_output)
+        return
     metadata = _load_custom_metadata(custom_metadata, custom_metadata_file)
     result = get_client(api_key).assets.upload(
         source,
@@ -614,6 +792,7 @@ def assets_upload(
         path=path,
         tags=tag,
         custom_metadata=metadata,
+        **scene_options,
     )
     emit(
         {
@@ -637,6 +816,24 @@ def assets_upload(
     )
     if result.failed:
         raise typer.Exit(code=1)
+
+
+@assets_app.command(name="status", help="Show an Asset's processing status")
+def assets_status(
+    asset_id: UUID,
+    api_key: API_KEY = None,
+    json_output: JSON_OUTPUT = False,
+):
+    emit(get_client(api_key).assets.asset(str(asset_id)).status(), json_output)
+
+
+@assets_app.command(name="retry", help="Process a failed Asset again")
+def assets_retry(
+    asset_id: UUID,
+    api_key: API_KEY = None,
+    json_output: JSON_OUTPUT = False,
+):
+    emit(get_client(api_key).assets.asset(str(asset_id)).retry(), json_output)
 
 
 @assets_app.command(name="set-metadata", help="Replace an Asset's custom metadata")
