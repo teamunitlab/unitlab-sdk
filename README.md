@@ -408,7 +408,7 @@ Supported inputs are COCO JSON, Unitlab exports (UUEF item JSON, Audio JSON and
 GeoJSON, as `.json` or `.geojson`), `unitlab-image/1` and `unitlab-video/1`. They
 cover image, video, medical, document, audio, time series, text, HTML, geospatial
 and pathology items. A UUEF file holds one item: import each file as its own batch.
-Each JSON file is limited to 20 MiB. The backend matches original media paths/IDs,
+Each JSON file is limited to 600 MiB. The backend matches original media paths/IDs,
 with a unique-filename fallback; ambiguous names require an explicit mapping.
 YOLO text/ZIP files and other tools' project files are not accepted by this importer.
 
