@@ -20,6 +20,7 @@ from ._base import Namespace, identifier
 if TYPE_CHECKING:
     from unitlab.client import UnitlabClient
 
+    from .annotation_imports import AnnotationImports
     from .workflow import Workflow
 
 
@@ -166,6 +167,12 @@ class Project:
     description: str = ""
     data_item_count: int = 0
     ontology_hash: str | None = None
+
+    @property
+    def annotation_imports(self) -> AnnotationImports:
+        from .annotation_imports import AnnotationImports
+
+        return AnnotationImports(self._client, self.id)
 
     @property
     def workflow(self) -> Workflow:
