@@ -27,6 +27,7 @@ from .ontology import (
     TextAttribute,
 )
 from .resources import (
+    AnnotationImport,
     Asset,
     AttachedSource,
     BatchQueue,
@@ -59,6 +60,7 @@ __version__ = version("unitlab")
 
 __all__ = [
     "AmbiguousUploadCompletionError",
+    "AnnotationImport",
     "Asset",
     "AssetUploadResult",
     "AttachPreview",

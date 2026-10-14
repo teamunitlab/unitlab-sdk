@@ -1,3 +1,4 @@
+from .annotation_imports import AnnotationImport
 from .assets import Asset, Folder, GroupingResult
 from .cloud import CloudStorage
 from .datasets import Dataset, DatasetItem, DatasetVersion
@@ -8,6 +9,7 @@ from .releases import Release
 from .workflow import Workflow, WorkflowStage, WorkflowTask
 
 __all__ = [
+    "AnnotationImport",
     "Asset",
     "AttachedSource",
     "BatchQueue",

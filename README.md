@@ -383,6 +383,69 @@ batch = project.import_cloud(
 status = batch.wait()
 ```
 
+### Import annotation JSON
+
+Media can come from S3 while the annotation JSON stays on your computer:
+
+```python
+project = client.projects.get("PROJECT_ID")
+media = project.import_cloud("CLOUD_STORAGE_ID", ["images/"])
+status = media.wait()
+if status.failed:
+    raise RuntimeError("Some media failed processing; inspect the Batch Queue.")
+
+batch = project.annotation_imports.create(
+    "./predictions.json",
+    source_name="my-model",  # Reuse this namespace for the same prediction source.
+)
+print(batch.preview["counts"], batch.preview["issues"])
+# Inspect the preview before saving labels. Approval is a separate review step.
+report = batch.commit()
+print(report)
+```
+
+Supported inputs are COCO JSON, `unitlab-image/1` and `unitlab-video/1`.
+Each JSON file is limited to 20 MiB. The backend matches original media paths/IDs,
+with a unique-filename fallback; ambiguous names require an explicit mapping.
+YOLO text/ZIP and CVAT/Supervisely project files are not accepted by this importer.
+
+For COCO video, pass `frame_mapping_file="./frames.json"` in
+`unitlab-frame-map/1` format. Use `track_profile="attributes.track_id"` only for
+COCO exports with that explicit track-ID convention. Import video media at its
+original frame rate; annotations for frames omitted by sampling are rejected.
+
+`project.annotation_imports.sources()` lists saved prediction sources, and
+`project.annotation_imports.media(search="road.jpg")` finds media IDs for mappings.
+Pass `source_id=` instead of `source_name=` to reuse a source by ID. Set
+`options={"stable_ids": True}` only when your exporter keeps annotation IDs stable
+between prediction runs. Otherwise the default protects existing objects from
+unconfirmed ID reuse.
+
+After processing completes or you supply mappings, call `batch.refresh()` to
+rebuild the preview. `batch.refresh(options={...})` replaces all import options;
+omitting `options` preserves them. Supported options are `stable_ids`,
+`media_mapping`, `class_mapping`, `object_mapping`, and `review_mapping`.
+
+`batch.commit()` preserves conflicts and human deletions by default. To resolve
+a specific preview annotation, pass `decisions={annotation_key: "keep"}` (or
+`"incoming"` / `"skip"`). Invalid records prevent the whole commit unless you
+explicitly choose `allow_partial=True`. The report includes created, updated,
+kept, unchanged and skipped counts when applicable. A stale preview raises
+`ConflictError`; inspect a refreshed preview before committing again. If a
+commit response is lost, repeat the same batch's `commit()` with the same
+decisions; the server returns the saved report without duplicating labels.
+
+For annotations already in connected storage, omit the local file and pass
+`cloud_storage=storage`, `annotation_key="labels/predictions.json"`, and optionally
+`frame_mapping_key="labels/frames.json"`. Keys are relative to that connection's
+prefix. Media and annotations must resolve within the API key's workspace and
+the selected project.
+
+This requires a backend with the `/api/sdk/projects/{id}/annotation-imports/`
+routes and the annotation-import database migration installed. Commit requires
+a user-created API key so saved labels have an audit author. Legacy keys without
+a creator can preview but receive `PermissionDeniedError` when committing.
+
 ### Data Groups
 
 Let Unitlab suggest a filename pattern:
