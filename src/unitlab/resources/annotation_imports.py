@@ -48,7 +48,7 @@ class AnnotationImports(Namespace):
         track_profile: Literal["none", "attributes.track_id"] = "none",
         options: dict[str, Any] | None = None,
     ) -> AnnotationImport:
-        """Upload COCO/Unitlab JSON and return a preview without saving labels.
+        """Upload COCO, Unitlab export or native JSON and return a label preview.
 
         Supply a local ``annotation_file`` or a saved ``cloud_storage`` handle/ID
         and ``annotation_key``. JSON files are limited to 20 MiB each. Media must
@@ -105,7 +105,11 @@ class AnnotationImports(Namespace):
                 if value is None:
                     continue
                 path = Path(value)
-                if not path.is_file() or path.suffix.lower() != ".json":
+                # GeoJSON exports keep their own extension; frame maps are .json.
+                suffixes = (
+                    (".json", ".geojson") if name == "annotation_file" else (".json",)
+                )
+                if not path.is_file() or path.suffix.lower() not in suffixes:
                     raise ValueError(f"{name} must be a JSON file: {path}")
                 stream = stack.enter_context(path.open("rb"))
                 stream.seek(0, 2)

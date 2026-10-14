@@ -404,10 +404,13 @@ report = batch.commit()
 print(report)
 ```
 
-Supported inputs are COCO JSON, `unitlab-image/1` and `unitlab-video/1`.
+Supported inputs are COCO JSON, Unitlab exports (UUEF item JSON, Audio JSON and
+GeoJSON, as `.json` or `.geojson`), `unitlab-image/1` and `unitlab-video/1`. They
+cover image, video, medical, document, audio, time series, text, HTML, geospatial
+and pathology items. A UUEF file holds one item: import each file as its own batch.
 Each JSON file is limited to 20 MiB. The backend matches original media paths/IDs,
 with a unique-filename fallback; ambiguous names require an explicit mapping.
-YOLO text/ZIP and CVAT/Supervisely project files are not accepted by this importer.
+YOLO text/ZIP files and other tools' project files are not accepted by this importer.
 
 For COCO video, pass `frame_mapping_file="./frames.json"` in
 `unitlab-frame-map/1` format. Use `track_profile="attributes.track_id"` only for

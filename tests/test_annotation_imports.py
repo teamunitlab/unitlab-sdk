@@ -6,7 +6,13 @@ from types import SimpleNamespace
 import httpx
 import pytest
 
-from unitlab import AnnotationImport, ConflictError, RequestTimeoutError, UnitlabClient
+from unitlab import (
+    AnnotationImport,
+    ConflictError,
+    PermissionDeniedError,
+    RequestTimeoutError,
+    UnitlabClient,
+)
 from unitlab.resources.projects import Project
 
 BASE = "/api/sdk/projects/p1/annotation-imports/"
@@ -264,6 +270,43 @@ def test_file_size_limit_and_closed_streams_on_request_failure(
     with pytest.raises(ValueError, match="20 MiB"):
         project.annotation_imports.create(labels, source_name="model")
     assert len(opened) == 1
+
+
+def test_geojson_export_is_uploaded_but_not_as_a_frame_map(
+    project_factory, labels, tmp_path
+):
+    geojson = tmp_path / "release.geojson"
+    geojson.write_text(json.dumps({"type": "FeatureCollection", "features": []}))
+
+    def handler(request):
+        parts = multipart(request)
+        assert json.loads(parts["annotation_file"])["type"] == "FeatureCollection"
+        assert "frame_mapping_file" not in parts
+        return httpx.Response(201, json=PREVIEW)
+
+    imports = project_factory(handler).annotation_imports
+    assert imports.create(geojson, source_name="raster").id == "b1"
+    with pytest.raises(ValueError, match="frame_mapping_file"):
+        imports.create(labels, frame_mapping_file=geojson, source_name="raster")
+
+
+def test_creatorless_key_commit_raises_permission_denied(project_factory, labels):
+    def handler(request):
+        if request.url.path == BASE:
+            return httpx.Response(201, json=PREVIEW)
+        return httpx.Response(
+            403,
+            json={
+                "detail": "A user-created API key is required to commit.",
+                "code": "permission_denied",
+            },
+        )
+
+    batch = project_factory(handler).annotation_imports.create(
+        labels, source_name="model"
+    )
+    with pytest.raises(PermissionDeniedError, match="user-created API key"):
+        batch.commit()
 
 
 def test_source_and_media_helpers_use_project_scoped_routes(project_factory):
