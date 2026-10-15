@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import time
 from typing import Any
 
 import httpx
@@ -15,6 +16,11 @@ from .exceptions import (
     SubscriptionError,
     ValidationError,
 )
+
+# Match HTTPTransport(retries=3): one initial attempt, then three retries for
+# connection failures only. Leave transport construction to HTTPX so that its
+# standard HTTP_PROXY/HTTPS_PROXY/ALL_PROXY and NO_PROXY handling stays active.
+_CONNECT_RETRY_DELAYS = (0.0, 0.5, 1.0)
 
 
 def _extract_error_message(response: httpx.Response) -> str:
@@ -90,7 +96,6 @@ class HttpApi:
         self.client = httpx.Client(
             base_url=api_url,
             headers={"Authorization": f"Api-Key {api_key}"},
-            transport=httpx.HTTPTransport(retries=3),
             timeout=60.0,
         )
 
@@ -124,7 +129,14 @@ class HttpApi:
             }
             if timeout is not None:
                 kwargs["timeout"] = timeout
-            response = self.client.request(method, endpoint, **kwargs)
+            for attempt in range(len(_CONNECT_RETRY_DELAYS) + 1):
+                try:
+                    response = self.client.request(method, endpoint, **kwargs)
+                    break
+                except (httpx.ConnectError, httpx.ConnectTimeout):
+                    if attempt == len(_CONNECT_RETRY_DELAYS):
+                        raise
+                    time.sleep(_CONNECT_RETRY_DELAYS[attempt])
         except httpx.TimeoutException as exc:
             raise RequestTimeoutError(str(exc), exc) from exc
         except httpx.HTTPError as exc:
