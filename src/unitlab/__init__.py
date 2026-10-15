@@ -5,6 +5,7 @@ from ._scene_uploader import detect_scenes
 from .client import UnitlabClient
 from .exceptions import (
     AmbiguousUploadCompletionError,
+    AnnotationImportError,
     AuthenticationError,
     ConflictError,
     NetworkError,
@@ -61,6 +62,7 @@ __version__ = version("unitlab")
 __all__ = [
     "AmbiguousUploadCompletionError",
     "AnnotationImport",
+    "AnnotationImportError",
     "Asset",
     "AssetUploadResult",
     "AttachPreview",

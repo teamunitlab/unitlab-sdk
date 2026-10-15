@@ -8,10 +8,8 @@ import tqdm
 
 from .exceptions import (
     NetworkError,
-    NotFoundError,
     ProcessingTimeoutError,
     RequestTimeoutError,
-    SubscriptionError,
 )
 from .types import ProcessingStatus
 
@@ -53,9 +51,13 @@ def wait_for_status(
                     progress.refresh()
                 if status.processing == 0:
                     return status
-            except (NotFoundError, SubscriptionError):
-                raise
-            except (NetworkError, RequestTimeoutError):
+            except (NetworkError, RequestTimeoutError) as exc:
+                # A NetworkError subclass is an answer (permission refused,
+                # invalid, not found, conflict, billing) and is raised at once,
+                # as in the uploaders. Only a lost answer (timeout, dropped
+                # connection) or a server error is asked again.
+                if isinstance(exc, NetworkError) and type(exc) is not NetworkError:
+                    raise
                 transient_errors += 1
                 if transient_errors > 3:
                     raise

@@ -49,6 +49,65 @@ def configured_client(handler):
     return client
 
 
+def test_empty_httpx_errors_get_a_readable_message():
+    from unitlab._http import error_text
+
+    assert error_text(httpx.ReadTimeout("")) == (
+        "ReadTimeout: no answer before the request timed out"
+    )
+    assert error_text(httpx.RemoteProtocolError("")).startswith(
+        "RemoteProtocolError: the connection closed"
+    )
+    assert error_text(httpx.ConnectError("refused")) == "refused"
+
+
+def test_upload_reports_dropped_connections_and_caps_files_in_flight(tmp_path):
+    import asyncio
+
+    for index in range(5):
+        (tmp_path / f"img{index}.png").write_bytes(b"png")
+    in_flight = peak = 0
+
+    def info(request):
+        return httpx.Response(
+            200,
+            json={
+                "accepted_formats": ["png"],
+                "max_file_sizes": {"img": 1_000_000},
+                "max_file_size": 1_000_000,
+                "generic_type": None,
+            },
+        )
+
+    async def upload(request):
+        nonlocal in_flight, peak
+        in_flight += 1
+        peak = max(peak, in_flight)
+        await asyncio.sleep(0.01)
+        in_flight -= 1
+        if b'filename="img0.png"' in request.content:
+            # What a restarting server does: httpx raises with no message.
+            raise httpx.RemoteProtocolError("")
+        return httpx.Response(201, json={"datasource_id": "ds", "generic_type": "img"})
+
+    client = UnitlabClient(api_key="key", api_url="http://testserver")
+    client._api.client.close()
+    client._api.client = httpx.Client(
+        base_url="http://testserver", transport=httpx.MockTransport(info)
+    )
+    client._api.async_client = lambda *, timeout=600.0: httpx.AsyncClient(
+        base_url="http://testserver", transport=httpx.MockTransport(upload)
+    )
+    project = Project(id="project-id", name="Images", raw={}, _client=client)
+    batch = project.upload(tmp_path, max_concurrent_uploads=2)
+    assert peak == 2
+    assert batch.uploaded == 4
+    assert [failure.path.name for failure in batch.failed] == ["img0.png"]
+    assert "connection closed" in batch.failed[0].error
+    assert "missing datasource_id" not in batch.failed[0].error
+    client.close()
+
+
 def test_project_upload_uses_one_batch_queue_and_chunks(tmp_path):
     session_ids = []
     uploads = 0

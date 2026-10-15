@@ -34,6 +34,84 @@ def client_with_handler(handler):
     return client
 
 
+def test_step_by_step_commit_lists_blocked_rows(tmp_path):
+    from unitlab.exceptions import AnnotationImportError
+
+    source = tmp_path / "predictions.json"
+    source.write_text("{}")
+    blocked = {
+        "key": "3",
+        "external_key": "ann-3",
+        "status": "blocked",
+        "reason": "Geometry lies outside original media dimensions.",
+    }
+    timeouts = []
+
+    def handler(request):
+        timeouts.append(request.extensions["timeout"]["read"])
+        if request.url.path.endswith("/commit/"):
+            return httpx.Response(
+                400, json=["Resolve blocked records or explicitly choose to skip."]
+            )
+        return httpx.Response(
+            201,
+            json={
+                "batch_id": "b1",
+                "source_id": "s1",
+                "token": "t1",
+                "annotations": [blocked],
+            },
+        )
+
+    client = client_with_handler(handler)
+    project = Project(id="project-id", name="Images", raw={}, _client=client)
+    batch = project.annotation_imports.create(source, source_name="model-a")
+    with pytest.raises(AnnotationImportError) as error:
+        batch.commit()
+    assert error.value.rows == [blocked]
+    assert error.value.batch_id == "b1"
+    # The server's list body reads as text, not as "['...']".
+    assert str(error.value).startswith("Resolve blocked records")
+    assert "ann-3: Geometry lies outside" in str(error.value)
+    assert "allow_partial=True" in str(error.value)
+    # Preview and commit re-check every item on the server: past 60 s.
+    assert timeouts == [300, 300]
+    client.close()
+
+
+def test_wait_raises_refusals_at_once_and_retries_server_errors(monkeypatch):
+    from unitlab import _waiter
+    from unitlab.exceptions import PermissionDeniedError, ValidationError
+
+    monkeypatch.setattr(_waiter.time, "sleep", lambda _: None)
+    answers = []
+    done = {"total": 1, "completed": 1, "processing": 0, "failed": 0}
+
+    def handler(request):
+        return answers.pop(0)
+
+    client = client_with_handler(handler)
+    for refusal, error in (
+        (
+            httpx.Response(403, json={"detail": "No.", "code": "permission_denied"}),
+            PermissionDeniedError,
+        ),
+        (httpx.Response(400, json={"detail": "Bad."}), ValidationError),
+    ):
+        answers[:] = [refusal, httpx.Response(200, json=done)]
+        with pytest.raises(error):
+            _waiter.wait_for_status(client._api, "/status/", resource_name="Q")
+        assert len(answers) == 1  # asked once, not retried
+
+    answers[:] = [
+        httpx.Response(503, json={"detail": "Busy."}),
+        httpx.Response(200, json=done),
+    ]
+    status = _waiter.wait_for_status(client._api, "/status/", resource_name="Q")
+    assert status.completed == 1 and not answers
+    client.close()
+
+
 def test_duplicate_public_methods_are_removed():
     removed = (
         (

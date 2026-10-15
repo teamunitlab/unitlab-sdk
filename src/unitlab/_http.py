@@ -41,6 +41,9 @@ def _extract_error_message(response: httpx.Response) -> str:
             parts.append(f"{field}: {value}")
         if parts:
             return "; ".join(parts)
+    if isinstance(body, list):
+        # DRF serializes ValidationError("...") raised in a view as ["..."].
+        return "; ".join(str(item) for item in body)
     return str(body)
 
 
@@ -52,6 +55,21 @@ def _extract_error_code(response: httpx.Response) -> str:
     if isinstance(body, dict):
         return str(body.get("code") or "")
     return ""
+
+
+def error_text(exc: BaseException) -> str:
+    """``str(exc)``, or a readable stand-in when it is empty.
+
+    httpx leaves ReadTimeout, ReadError, RemoteProtocolError and ConnectError
+    without a message when the server resets or never answers; an empty
+    string then reached users as a misleading follow-up error.
+    """
+    text = str(exc).strip()
+    if text:
+        return text
+    if isinstance(exc, httpx.TimeoutException):
+        return f"{type(exc).__name__}: no answer before the request timed out"
+    return f"{type(exc).__name__}: the connection closed without a response"
 
 
 def raise_for_response(response: httpx.Response) -> None:
@@ -138,9 +156,9 @@ class HttpApi:
                         raise
                     time.sleep(_CONNECT_RETRY_DELAYS[attempt])
         except httpx.TimeoutException as exc:
-            raise RequestTimeoutError(str(exc), exc) from exc
+            raise RequestTimeoutError(error_text(exc), exc) from exc
         except httpx.HTTPError as exc:
-            raise NetworkError(str(exc), exc) from exc
+            raise NetworkError(error_text(exc), exc) from exc
         raise_for_response(response)
         if not response.content:
             return None

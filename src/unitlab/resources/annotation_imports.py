@@ -7,12 +7,16 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
+from ..exceptions import AnnotationImportError, ValidationError
 from ._base import Namespace, identifier
 
 if TYPE_CHECKING:
     from unitlab.client import UnitlabClient
 
 MAX_FILE_BYTES = 600 * 1024 * 1024
+# Preview and commit re-check every row and item on the server; live runs on
+# large files took over a minute, past the client's 60 s default.
+SERVER_WORK_TIMEOUT = 300
 
 
 class AnnotationImports(Namespace):
@@ -119,9 +123,16 @@ class AnnotationImports(Namespace):
                 files[name] = (path.name, stream, "application/json")
             if files:
                 data["options"] = json.dumps(import_options, allow_nan=False)
-                raw = self._api.post(self._endpoint, data=data, files=files)
+                raw = self._api.post(
+                    self._endpoint,
+                    data=data,
+                    files=files,
+                    timeout=SERVER_WORK_TIMEOUT,
+                )
             else:
-                raw = self._api.post(self._endpoint, json=data)
+                raw = self._api.post(
+                    self._endpoint, json=data, timeout=SERVER_WORK_TIMEOUT
+                )
 
         return AnnotationImport(
             id=str(raw["batch_id"]),
@@ -164,19 +175,48 @@ class AnnotationImport:
         *,
         decisions: dict[str, Literal["keep", "incoming", "skip"]] | None = None,
         allow_partial: bool = False,
+        timeout: float = SERVER_WORK_TIMEOUT,
     ) -> dict[str, Any]:
         """Save this preview as labels; approval remains a separate review step.
 
         Conflicts and human deletions default to ``keep``. Blocked records reject
         the entire commit unless ``allow_partial=True``. A stale preview raises
         ConflictError without refreshing or overwriting human work. Repeating a
-        successful commit returns its original report without duplicating labels.
+        successful commit returns its original report without duplicating labels,
+        so after a timeout or a dropped connection call ``commit`` again with
+        the same arguments. ``timeout`` is in seconds (the server checks every
+        item again first, which can take over a minute).
+
+        Raises:
+            AnnotationImportError: Blocked records or file issues and
+                ``allow_partial=False``; ``rows`` and ``issues`` list them from
+                this preview, and nothing was written.
         """
-        return self._client._api.post(
-            f"{self._endpoint}commit/",
-            json={
-                "token": self.preview["token"],
-                "decisions": decisions or {},
-                "allow_partial": allow_partial,
-            },
-        )
+        try:
+            return self._client._api.post(
+                f"{self._endpoint}commit/",
+                json={
+                    "token": self.preview["token"],
+                    "decisions": decisions or {},
+                    "allow_partial": allow_partial,
+                },
+                timeout=timeout,
+            )
+        except ValidationError as exc:
+            # The token matched, so the server judged exactly this preview:
+            # name its blocked rows instead of the server's one-line refusal.
+            rows = [
+                row
+                for row in self.preview.get("annotations") or []
+                if row.get("status") == "blocked"
+            ]
+            issues = self.preview.get("issues") or []
+            if not (rows or issues):
+                raise
+            raise AnnotationImportError(
+                f"{exc.message} Pass allow_partial=True to skip them.",
+                exc,
+                rows=rows,
+                issues=issues,
+                batch_id=self.id,
+            ) from exc

@@ -258,7 +258,7 @@ def test_file_size_limit_and_closed_streams_on_request_failure(
     project = project_factory(lambda request: httpx.Response(500))
     opened = []
 
-    def post(endpoint, *, data, files):
+    def post(endpoint, *, data, files, **kwargs):
         opened.extend(item[1] for item in files.values())
         raise RuntimeError("request failed")
 

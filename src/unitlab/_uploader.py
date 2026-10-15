@@ -12,7 +12,7 @@ from typing import Any
 import httpx
 import tqdm
 
-from ._http import _extract_error_message, raise_for_response
+from ._http import _extract_error_message, error_text, raise_for_response
 from .exceptions import (
     AmbiguousUploadCompletionError,
     NetworkError,
@@ -200,7 +200,7 @@ async def _post_file(
     except SubscriptionError:
         raise
     except (httpx.TransportError, httpx.TimeoutException) as exc:
-        return None, str(exc)
+        return None, error_text(exc)
     except ValueError:
         return None, "Unexpected response format"
 
@@ -297,7 +297,9 @@ async def _put_tiled_part(
             last_error = exc
             if attempt + 1 < TILED_PART_MAX_ATTEMPTS:
                 await asyncio.sleep(TILED_PART_RETRY_DELAY_SECONDS * (attempt + 1))
-    raise NetworkError(f"Multipart part upload failed: {last_error}", last_error)
+    raise NetworkError(
+        f"Multipart part upload failed: {error_text(last_error)}", last_error
+    )
 
 
 async def _abort_tiled_upload(
@@ -332,7 +334,7 @@ async def _upload_tiled_file(
     try:
         response = await api_client.post(f"{endpoint}/initiate/", json=initiate)
     except (httpx.HTTPError, httpx.TimeoutException) as exc:
-        raise _TiledUploadRejectedError(str(exc)) from exc
+        raise _TiledUploadRejectedError(error_text(exc)) from exc
     if _can_fallback_from_initiate(response):
         raise _FallbackToSimpleUploadError(_extract_error_message(response))
     if response.status_code in (401, 403):
@@ -549,7 +551,7 @@ async def _finalize_medical_upload(client, endpoint: str, batch_queue_id: str) -
             raise_for_response(response)
             return
         except (httpx.TransportError, httpx.TimeoutException) as exc:
-            last_error = str(exc)
+            last_error = error_text(exc)
             if attempt < RETRY_COUNT:
                 await asyncio.sleep(RETRY_DELAY_SECONDS)
                 continue
@@ -620,12 +622,15 @@ async def _upload_project_async(
     primary_column: str | None,
     batch_size: int,
     show_progress: bool,
+    max_concurrent_uploads: int = UPLOAD_CONCURRENCY,
 ) -> UploadResult:
     failures: list[UploadFailure] = []
     responses: list[dict[str, Any]] = []
     successful_medical = False
     batch_error: Exception | None = None
-    chunk_size = max(1, min(UPLOAD_CONCURRENCY, batch_size))
+    # Files in flight at once; a slow server (one local web process) answers
+    # each upload in seconds, so fewer at a time avoids long queues.
+    chunk_size = max(1, min(max_concurrent_uploads, batch_size))
     progress = tqdm.tqdm(total=len(files), ncols=80, disable=not show_progress)
     try:
         part_semaphore = asyncio.Semaphore(TILED_PART_CONCURRENCY)
@@ -740,9 +745,12 @@ def upload_project(
     primary_column: str | None = None,
     batch_size: int = 100,
     show_progress: bool = True,
+    max_concurrent_uploads: int = UPLOAD_CONCURRENCY,
 ) -> tuple[UploadResult, str]:
     if batch_size < 1:
         raise ValueError("batch_size must be at least 1")
+    if max_concurrent_uploads < 1:
+        raise ValueError("max_concurrent_uploads must be at least 1")
     upload_info = api.get(f"/api/sdk/projects/{project_id}/upload-info/")
     files, preflight_failures = _project_files(source, upload_info, generic_type)
     if not files and not preflight_failures:
@@ -769,6 +777,7 @@ def upload_project(
             primary_column=primary_column,
             batch_size=batch_size,
             show_progress=show_progress,
+            max_concurrent_uploads=max_concurrent_uploads,
         )
     )
     result.total += len(preflight_failures)

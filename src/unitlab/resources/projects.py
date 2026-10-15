@@ -267,6 +267,7 @@ class Project:
         primary_column: str | None = None,
         batch_size: int = 100,
         split_sensor_folders: bool = False,
+        max_concurrent_uploads: int = _uploader.UPLOAD_CONCURRENCY,
     ) -> UploadBatch:
         """Upload local files into this Project.
 
@@ -285,6 +286,9 @@ class Project:
             split_sensor_folders: Lidar scenes only. Read sensor folders that
                 share file names as one scene each instead of one scene with
                 several sensors (see ``unitlab.detect_scenes``).
+            max_concurrent_uploads: Files sent at the same time (default 20).
+                Lower it for a slow or local server; a file whose request
+                times out is reported in ``failed``.
 
         Returns:
             Local upload results and the server-side Batch Queue ID. Server
@@ -316,6 +320,7 @@ class Project:
                 primary_column=primary_column,
                 batch_size=batch_size,
                 show_progress=sys.stderr.isatty(),
+                max_concurrent_uploads=max_concurrent_uploads,
             )
         batch = UploadBatch(
             project_id=self.id,

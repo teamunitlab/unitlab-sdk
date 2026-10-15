@@ -43,7 +43,7 @@ import httpx
 import tqdm
 
 from . import _uploader
-from ._http import _extract_error_message, raise_for_response
+from ._http import _extract_error_message, error_text, raise_for_response
 from ._scenes import (
     Scene,
     SceneDetection,
@@ -221,7 +221,7 @@ async def _api_post(
     try:
         response = await client.post(url, json=body)
     except (httpx.HTTPError, httpx.TimeoutException) as exc:
-        raise _SceneRefusedError(str(exc)) from exc
+        raise _SceneRefusedError(error_text(exc)) from exc
     if response.status_code in (401, 403):
         raise_for_response(response)
     if response.status_code == 404:
@@ -306,7 +306,9 @@ async def _put_scene_file(
                 await asyncio.sleep(
                     _uploader.TILED_PART_RETRY_DELAY_SECONDS * (attempt + 1)
                 )
-    raise NetworkError(f"Upload of {file.path} failed: {last_error}", last_error)
+    raise NetworkError(
+        f"Upload of {file.path} failed: {error_text(last_error)}", last_error
+    )
 
 
 async def _upload_scene_folder(

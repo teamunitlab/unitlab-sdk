@@ -8,7 +8,7 @@ from urllib.parse import urlparse
 import httpx
 import tqdm
 
-from ._http import _safe_path
+from ._http import _safe_path, error_text
 from ._uploader import run_sync
 from .exceptions import NetworkError
 
@@ -45,7 +45,9 @@ def download_annotation(
     except (httpx.HTTPError, OSError) as exc:
         if partial.exists():
             partial.unlink()
-        raise NetworkError(f"Failed to download release: {exc}", exc) from exc
+        raise NetworkError(
+            f"Failed to download release: {error_text(exc)}", exc
+        ) from exc
     return str(target.resolve())
 
 
