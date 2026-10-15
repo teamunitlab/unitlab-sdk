@@ -13,7 +13,7 @@ from ._base import Namespace, identifier
 if TYPE_CHECKING:
     from unitlab.client import UnitlabClient
 
-MAX_FILE_BYTES = 600 * 1024 * 1024
+MAX_FILE_BYTES = 80 * 1024 * 1024
 # Preview and commit re-check every row and item on the server; live runs on
 # large files took over a minute, past the client's 60 s default.
 SERVER_WORK_TIMEOUT = 300
@@ -55,7 +55,7 @@ class AnnotationImports(Namespace):
         """Upload COCO, Unitlab export or native JSON and return a label preview.
 
         Supply a local ``annotation_file`` or a saved ``cloud_storage`` handle/ID
-        and ``annotation_key``. JSON files are limited to 600 MiB each. Media must
+        and ``annotation_key``. JSON files are limited to 80 MiB each. Media must
         already belong to this project; use ``UploadBatch.wait()`` after upload.
 
         Exactly one prediction namespace, ``source_name`` or ``source_id``, is
@@ -118,7 +118,8 @@ class AnnotationImports(Namespace):
                 stream = stack.enter_context(path.open("rb"))
                 stream.seek(0, 2)
                 if stream.tell() > MAX_FILE_BYTES:
-                    raise ValueError(f"{name} must be 600 MiB or smaller.")
+                    limit = MAX_FILE_BYTES // (1024 * 1024)
+                    raise ValueError(f"{name} must be {limit} MiB or smaller.")
                 stream.seek(0)
                 files[name] = (path.name, stream, "application/json")
             if files:
