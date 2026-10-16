@@ -35,6 +35,7 @@ class ReleasesNamespace(Namespace):
         data_types=None,
         bundle_formats: dict[str, str] | None = None,
         license_id: str | None = None,
+        completed_only: bool = False,
         wait: bool = True,
         timeout: float = 7200,
     ) -> Release:
@@ -61,6 +62,11 @@ class ReleasesNamespace(Namespace):
                 includes every available concrete type.
             bundle_formats: Per-concrete-data-type formats for multimodal bundles.
             license_id: Optional Dataset license ID.
+            completed_only: Only items whose current workflow status is
+                Complete (a Data Group by its own status), with their latest
+                labels. Raises ``UnitlabError`` (code
+                ``completed_only_unsupported``) if the server does not know the
+                option, instead of returning a Release of every item.
             wait: Block until the Release is ready or has failed.
             timeout: Seconds to wait for preparation when ``wait`` is true.
 
@@ -98,6 +104,9 @@ class ReleasesNamespace(Namespace):
             }
         if license_id is not None:
             payload["license"] = identifier(license_id)
+        if completed_only:
+            # Sent only when asked, so every other request body stays as before.
+            payload["completed_only"] = True
         # The long request timeout stays: a backend that predates background
         # preparation still builds the whole Release inside this POST.
         raw = self._api.post(
@@ -106,6 +115,14 @@ class ReleasesNamespace(Namespace):
             timeout=600.0,
         )
         release = Release._from_raw(self._client, raw)
+        if completed_only and not release.completed_only:
+            # An older server drops the unknown field and releases every item;
+            # its answer then lacks the echo. Say so rather than hand that back.
+            raise UnitlabError(
+                "This Unitlab server does not support completed_only releases; "
+                f"Release {release.id} was created with every labelled item.",
+                code="completed_only_unsupported",
+            )
         return release.wait(timeout=timeout) if wait else release
 
 
@@ -124,6 +141,8 @@ class Release:
     status: str | None = None
     progress: int | None = None
     status_error: str | None = None
+    # True when the Release holds only items that were Complete.
+    completed_only: bool = False
 
     @classmethod
     def _from_raw(cls, client: UnitlabClient, raw: dict[str, Any]) -> Release:
@@ -140,6 +159,7 @@ class Release:
             status=raw.get("status"),
             progress=raw.get("progress"),
             status_error=raw.get("status_error"),
+            completed_only=bool(raw.get("completed_only", False)),
         )
 
     def refresh(self) -> Release:
