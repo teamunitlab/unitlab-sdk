@@ -267,7 +267,7 @@ def test_file_size_limit_and_closed_streams_on_request_failure(
         project.annotation_imports.create(labels, source_name="model")
     assert opened and all(stream.closed for stream in opened)
     monkeypatch.setattr("unitlab.resources.annotation_imports.MAX_FILE_BYTES", 1)
-    with pytest.raises(ValueError, match="600 MiB"):
+    with pytest.raises(ValueError, match="80 MiB"):
         project.annotation_imports.create(labels, source_name="model")
     assert len(opened) == 1
 
