@@ -25,6 +25,19 @@
 
 # Unitlab Python SDK
 
+## What's new in 3.2.0
+
+- Item annotations: `project.get_annotations()` and `ItemAnnotations.save()`
+  (optimistic revision, `RevisionConflictError`, `AnnotationValidationError`).
+- Project Data Groups: `project.groups` with readiness, the group layer
+  (`ProjectGroup.layer()`, `save_layer()`) and `import_layer()` for UUEF
+  `groups/*.json`; `Release.read_groups()`.
+- Library groups made by hand (`Folder.create_group`, `TileSpec` with
+  `read_only` and `alignment`), background auto-grouping jobs and `rerun`.
+- Lidar scenes from robot recordings: `.mcap`, `.bag` and `.db3` upload as one
+  scene; `scene_status().recording` reports the conversion.
+- `client.capabilities()`; `UnsupportedByServerError` on older servers.
+
 Native Python and CLI access to Unitlab projects, Ontologies, Assets, datasets,
 published versions, Batch Queues, Releases, cloud storage, and multimodal Data
 Groups and Workflow Tasks.
@@ -474,9 +487,84 @@ estimate = folder.estimate_grouping(config)
 grouped = folder.auto_group(config)
 ```
 
-For folders above 5,000 files or estimates above 1,000 groups, `auto_group()`
-raises an actionable `ValidationError`. Split the source into smaller folders
-and retry; the SDK does not return a job that will never run.
+For folders above 5,000 files or estimates above 1,000 groups the server groups
+in the background; `auto_group()` waits for it. With `wait=False` the result
+carries `job_id`, and `client.data_groups.job(job_id).wait()` follows it.
+`client.data_groups.rerun(config_id)` runs a saved configuration again: new
+files become new groups or fill tiles a group lacked.
+
+Make a group by hand, with a read-only reference tile and a timeseries aligned
+to a video by frame:
+
+```python
+from unitlab import TileSpec
+
+group = folder.create_group(
+    "Drive 0042",
+    [
+        TileSpec("front", asset=front_video, required=True),
+        TileSpec("map", asset=map_image, read_only=True),
+        TileSpec(
+            "imu",
+            asset=imu_csv,
+            alignment={"align_to_tile_id": "front", "mode": "frame", "offset": 0},
+        ),
+    ],
+    multi_layer=False,
+)
+group.update(name="Drive 0042 (night)")
+```
+
+In a project, a Data Group is one work unit. Read its tiles and readiness, and
+its group layer: answers of group properties and links between objects of
+different tiles.
+
+```python
+from unitlab import RevisionConflictError
+
+for group in project.groups.list():
+    print(group.name, group.readiness["is_ready"])
+
+group = project.groups.get("GROUP_ID")
+layer = group.layer()
+try:
+    group.save_layer(layer=layer, properties={**layer.properties, "7": "rain"})
+except RevisionConflictError:
+    pass  # Someone saved meanwhile: read the layer again and re-apply.
+```
+
+A UUEF Release holds one `groups/<id>.json` per Data Group; read them with
+`Release.read_groups(path)` (or `release.download_groups()`), and apply one to a
+project with `project.groups.import_layer(path_or_document, dry_run=False)`.
+
+### Annotations of one item
+
+Read every page of an item's annotations with the revision a save must name,
+then change only what you send (other objects are kept):
+
+```python
+from unitlab import AnnotationValidationError, RevisionConflictError
+
+item = project.get_annotations("ITEM_ID")
+try:
+    item.save(
+        upsert=[
+            {"type": "bboxes", "class": 1, "box": {"x": 10, "y": 20, "width": 50, "height": 30}}
+        ]
+    )
+    item.save(delete=[item.objects[0]["id"]])
+except RevisionConflictError:
+    item = project.get_annotations("ITEM_ID")  # read again, then retry
+except AnnotationValidationError as error:
+    print(error.message)  # nothing was saved
+```
+
+Objects use the server's annotation format (`type` such as `bboxes`, `polygons`,
+`brush`; `class` is the integer class value). `item.save(..., dry_run=True)`
+validates without saving. Video, medical and
+lidar items read tracks; pass `frame_start`/`frame_end` to also read their
+keyframes. Servers without these routes raise `UnsupportedByServerError`;
+`client.capabilities()` tells in advance.
 
 ### Releases
 
@@ -533,6 +621,12 @@ unitlab project upload PROJECT_ID --source ./rig --type pointcloud \
   --split-sensor-folders
 unitlab project scene-status PROJECT_ID ITEM_ID
 unitlab project scene-retry PROJECT_ID ITEM_ID
+unitlab project groups PROJECT_ID
+unitlab project group-layer PROJECT_ID GROUP_ID
+unitlab project group-layer-save PROJECT_ID GROUP_ID --file layer.json
+unitlab project group-layer-import PROJECT_ID groups/RELEASE_GROUP_ID.json --commit
+unitlab project annotations PROJECT_ID ITEM_ID
+unitlab project annotations-save PROJECT_ID ITEM_ID --file changes.json --dry-run
 unitlab batch-queue list PROJECT_ID
 unitlab batch-queue detail PROJECT_ID BATCH_QUEUE_ID
 unitlab batch-queue status PROJECT_ID BATCH_QUEUE_ID
