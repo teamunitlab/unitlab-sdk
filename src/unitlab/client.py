@@ -13,6 +13,7 @@ from .resources.embeddings import EmbeddingSpacesNamespace
 from .resources.ontologies import OntologiesNamespace
 from .resources.projects import DataUnit, Project, ProjectsNamespace
 from .resources.releases import ReleasesNamespace
+from .resources.statistics import StatisticsNamespace
 from .resources.workflow import WorkflowTask
 from .types import AttachResult
 
@@ -36,6 +37,7 @@ class UnitlabClient:
         self.ontologies = OntologiesNamespace(self)
         self.releases = ReleasesNamespace(self)
         self.cloud_storages = CloudNamespace(self)
+        self.statistics = StatisticsNamespace(self)
 
     def close(self) -> None:
         self._api.close()
