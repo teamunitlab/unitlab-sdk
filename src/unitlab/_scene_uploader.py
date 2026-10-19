@@ -57,13 +57,16 @@ from .types import UploadFailure, UploadResult
 SCENE_TYPE = "pointcloud"
 # Mirrors the server's ``pointcloud_service.UPLOAD_EXTENSIONS``.
 CLOUD_EXTENSIONS = ("pcd", "bin", "ply")
-SCENE_FILE_EXTENSIONS = ("zip", *CLOUD_EXTENSIONS)
+# Robot recordings the server converts into a scene: MCAP, ROS 1 bag, ROS 2 .db3.
+RECORDING_EXTENSIONS = ("mcap", "bag", "db3")
+SCENE_FILE_EXTENSIONS = ("zip", *CLOUD_EXTENSIONS, *RECORDING_EXTENSIONS)
 SCENE_MANIFEST_NAME = "scene.json"
 # Files of one folder scene sent at once; the browser's FOLDER_FILE_CONCURRENCY.
 FOLDER_FILE_CONCURRENCY = 6
 
 NOT_A_SCENE_FORMAT = (
-    "A lidar scene is a .zip, .pcd, .bin or .ply file, or a folder of such frames."
+    "A lidar scene is a .zip, .pcd, .bin or .ply file, a recording (.mcap, .bag, "
+    ".db3), or a folder of such frames."
 )
 # The browser's wording for the same refusal.
 NOT_A_SCENE_ZIP = (
@@ -110,7 +113,11 @@ def _is_scene_zip(path: Path) -> bool:
 
 def _is_scene_file(path: Path) -> bool:
     extension = _uploader.extension_for_filename(path.name)
-    return extension in CLOUD_EXTENSIONS or (extension == "zip" and _is_scene_zip(path))
+    return (
+        extension in CLOUD_EXTENSIONS
+        or extension in RECORDING_EXTENSIONS
+        or (extension == "zip" and _is_scene_zip(path))
+    )
 
 
 def _file_scene(path: Path) -> Scene:
