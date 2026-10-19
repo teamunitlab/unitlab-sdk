@@ -222,6 +222,19 @@ class Folder:
             f"/api/sdk/data-assets/folders/{self.id}/sync-cloud/"
         )
 
+    def groups(self) -> list:
+        """The Data Groups whose tiles live in this folder."""
+        return self._client.data_groups.list(self)
+
+    def create_group(self, name: str, tiles: list, **options: Any):
+        """Make one Data Group in this folder from named files.
+
+        ``tiles`` is a list of ``TileSpec`` (or dicts with ``tile_id``,
+        ``asset_id``, ``title``, ``required``, ``read_only``, ``alignment``);
+        ``options`` are ``layout``, ``multi_layer`` and ``custom_metadata``.
+        """
+        return self._client.data_groups.create(self, name, tiles, **options)
+
     def suggest_grouping(self) -> dict[str, Any]:
         return self._client._api.get(
             f"/api/sdk/data-assets/folders/{self.id}/auto-grouping/suggest/"
@@ -233,12 +246,23 @@ class Folder:
             json=config,
         )
 
-    def auto_group(self, config: dict[str, Any] | None = None) -> GroupingResult:
+    def auto_group(
+        self,
+        config: dict[str, Any] | None = None,
+        *,
+        wait: bool = True,
+        timeout: float = 7200,
+    ) -> GroupingResult:
         """Create Data Groups from folder filenames.
 
         Args:
             config: Explicit grouping configuration. When omitted, the server's
                 suggested configuration is used.
+            wait: For a folder too large to group in one call (more than 5,000
+                files or 1,000 groups) the server groups in the background;
+                wait for it to finish. With ``wait=False`` the result carries
+                ``job_id``; ``client.data_groups.job(job_id)`` follows it.
+            timeout: Seconds to wait for a background run.
 
         Returns:
             Counts and the folder containing the created groups.
@@ -275,10 +299,10 @@ class Folder:
             json=config,
         )
         if raw.get("mode") == "async":
-            raise ValidationError(
-                "This folder is too large for automatic grouping in one call. "
-                "Split it into smaller folders and retry."
-            )
+            # A large folder groups on the server; wait=True blocks until done.
+            if wait:
+                self._client.data_groups.job(str(raw["job_id"])).wait(timeout=timeout)
+            return GroupingResult._from_raw(self._client, raw)
         if not raw.get("valid", True):
             errors = raw.get("errors") or ["Invalid grouping configuration."]
             raise ValidationError("; ".join(str(error) for error in errors))
@@ -393,6 +417,7 @@ class GroupingResult:
     grouped_folder_id: str | None
     raw: dict[str, Any] = field(repr=False)
     _client: UnitlabClient = field(repr=False, compare=False)
+    job_id: str | None = None
 
     @classmethod
     def _from_raw(
@@ -407,7 +432,14 @@ class GroupingResult:
             ),
             raw=raw,
             _client=client,
+            job_id=str(raw["job_id"]) if raw.get("job_id") else None,
         )
+
+    def groups(self) -> list:
+        """The groups in the grouped folder (all of them, after a background run)."""
+        if not self.grouped_folder_id:
+            raise UnitlabError("No grouped folder was created.")
+        return self._client.data_groups.list(self.grouped_folder_id)
 
     def grouped_folder(self) -> Folder:
         if not self.grouped_folder_id:

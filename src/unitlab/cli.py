@@ -545,6 +545,123 @@ def project_scene_retry(
     )
 
 
+def _read_json_file(path: Path) -> dict[str, Any]:
+    try:
+        value = json.loads(path.read_text(encoding="utf-8-sig"))
+    except (OSError, ValueError) as exc:
+        raise typer.BadParameter(f"{path}: {exc}") from exc
+    if not isinstance(value, dict):
+        raise typer.BadParameter(f"{path}: expected a JSON object")
+    return value
+
+
+@project_app.command(name="groups", help="List a project's Data Groups")
+def project_groups(
+    project_id: UUID,
+    api_key: API_KEY = None,
+    json_output: JSON_OUTPUT = False,
+):
+    project = get_client(api_key).projects.get(str(project_id))
+    emit(project.groups.list(), json_output)
+
+
+@project_app.command(name="group-layer", help="Show a Data Group's group layer")
+def project_group_layer(
+    project_id: UUID,
+    group_id: UUID,
+    api_key: API_KEY = None,
+    json_output: JSON_OUTPUT = False,
+):
+    project = get_client(api_key).projects.get(str(project_id))
+    emit(project.groups.get(str(group_id)).layer(), json_output)
+
+
+@project_app.command(
+    name="group-layer-save",
+    help="Replace a Data Group's layer from a JSON file {revision, properties, links}",
+)
+def project_group_layer_save(
+    project_id: UUID,
+    group_id: UUID,
+    file: Path = typer.Option(..., "--file", exists=True, dir_okay=False),
+    api_key: API_KEY = None,
+    json_output: JSON_OUTPUT = False,
+):
+    body = _read_json_file(file)
+    group = get_client(api_key).projects.get(str(project_id)).groups.get(str(group_id))
+    emit(
+        group.save_layer(
+            properties=body.get("properties") or {},
+            links=body.get("links") or [],
+            expected_revision=body.get("revision"),
+        ),
+        json_output,
+    )
+
+
+@project_app.command(
+    name="group-layer-import",
+    help="Import a UUEF groups/<id>.json document (preview unless --commit)",
+)
+def project_group_layer_import(
+    project_id: UUID,
+    document: Path = typer.Argument(..., exists=True, dir_okay=False),
+    commit: bool = typer.Option(False, "--commit", help="Save the layer"),
+    api_key: API_KEY = None,
+    json_output: JSON_OUTPUT = False,
+):
+    project = get_client(api_key).projects.get(str(project_id))
+    emit(
+        project.groups.import_layer(_read_json_file(document), dry_run=not commit),
+        json_output,
+    )
+
+
+@project_app.command(name="annotations", help="Show one item's annotations")
+def project_annotations(
+    project_id: UUID,
+    item_id: UUID,
+    include_masks: bool = typer.Option(False, "--include-masks"),
+    api_key: API_KEY = None,
+    json_output: JSON_OUTPUT = False,
+):
+    project = get_client(api_key).projects.get(str(project_id))
+    emit(
+        project.get_annotations(str(item_id), include_masks=include_masks), json_output
+    )
+
+
+@project_app.command(
+    name="annotations-save",
+    help=(
+        "Save annotation changes from a JSON file {expected_revision, upsert, "
+        "delete, item_properties, tags}"
+    ),
+)
+def project_annotations_save(
+    project_id: UUID,
+    item_id: UUID,
+    file: Path = typer.Option(..., "--file", exists=True, dir_okay=False),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Validate only"),
+    api_key: API_KEY = None,
+    json_output: JSON_OUTPUT = False,
+):
+    body = _read_json_file(file)
+    project = get_client(api_key).projects.get(str(project_id))
+    emit(
+        project.save_annotations(
+            str(item_id),
+            expected_revision=body.get("expected_revision"),
+            upsert=body.get("upsert"),
+            delete=body.get("delete"),
+            item_properties=body.get("item_properties"),
+            tags=body.get("tags"),
+            dry_run=dry_run,
+        ),
+        json_output,
+    )
+
+
 @project_app.command(name="sources", help="List attached project sources")
 def project_sources(
     project_id: UUID,

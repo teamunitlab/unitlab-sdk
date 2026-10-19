@@ -42,6 +42,26 @@ class ConflictError(NetworkError):
     """
 
 
+class RevisionConflictError(ConflictError):
+    """Raised when a save names a revision that is no longer the latest.
+
+    Someone else saved in between. Read again (``get_annotations`` or the
+    group layer), apply the change to what you read, and save with the new
+    revision.
+    """
+
+
+class AnnotationValidationError(ValidationError):
+    """Raised when the server refuses annotation changes; nothing was saved.
+
+    ``message`` says which object or field is wrong.
+    """
+
+
+class UnsupportedByServerError(NetworkError):
+    """Raised when the Unitlab server does not offer this feature yet."""
+
+
 class SubscriptionError(NetworkError):
     """Raised when a subscription error occurs."""
 

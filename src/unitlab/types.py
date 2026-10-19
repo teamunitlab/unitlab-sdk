@@ -25,6 +25,9 @@ class ProcessingStatus:
     # positional construction keeps its meaning.
     error: str | None = None
     frame_count: int | None = None
+    # A scene converted from a robot recording (.mcap, .bag, .db3): what was
+    # read, which topics became which sensor and what was left out.
+    recording: dict[str, Any] | None = None
 
     @classmethod
     def _from_raw(cls, raw: dict[str, Any]) -> ProcessingStatus:
@@ -38,6 +41,9 @@ class ProcessingStatus:
             error=str(raw["error"]) if raw.get("error") else None,
             frame_count=(
                 int(raw["frame_count"]) if raw.get("frame_count") is not None else None
+            ),
+            recording=(
+                raw["recording"] if isinstance(raw.get("recording"), dict) else None
             ),
         )
 

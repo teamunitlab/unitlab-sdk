@@ -10,6 +10,7 @@ from .resources.assets import AssetsNamespace
 from .resources.cloud import CloudNamespace
 from .resources.datasets import DatasetsNamespace
 from .resources.embeddings import EmbeddingSpacesNamespace
+from .resources.groups import DataGroupsNamespace
 from .resources.ontologies import OntologiesNamespace
 from .resources.projects import DataUnit, Project, ProjectsNamespace
 from .resources.releases import ReleasesNamespace
@@ -36,6 +37,22 @@ class UnitlabClient:
         self.ontologies = OntologiesNamespace(self)
         self.releases = ReleasesNamespace(self)
         self.cloud_storages = CloudNamespace(self)
+        self.data_groups = DataGroupsNamespace(self)
+
+    def capabilities(self) -> dict[str, bool]:
+        """Features this Unitlab server offers the SDK.
+
+        Servers older than SDK 3.2 have no such route; every feature then
+        reads ``False``.
+        """
+        from .exceptions import NotFoundError
+
+        try:
+            payload = self._api.get("/api/sdk/capabilities/") or {}
+        except NotFoundError:
+            return {}
+        features = payload.get("features") or {}
+        return {key: bool(value) for key, value in features.items()}
 
     def close(self) -> None:
         self._api.close()

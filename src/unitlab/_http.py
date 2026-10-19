@@ -7,13 +7,16 @@ from typing import Any
 import httpx
 
 from .exceptions import (
+    AnnotationValidationError,
     AuthenticationError,
     ConflictError,
     NetworkError,
     NotFoundError,
     PermissionDeniedError,
     RequestTimeoutError,
+    RevisionConflictError,
     SubscriptionError,
+    UnsupportedByServerError,
     ValidationError,
 )
 
@@ -83,6 +86,8 @@ def raise_for_response(response: httpx.Response) -> None:
         response=response,
     )
     if response.status_code == 400:
+        if code == "annotation_invalid":
+            raise AnnotationValidationError(message, error, code)
         raise ValidationError(message, error, code)
     if response.status_code == 401:
         raise AuthenticationError(message or "Authentication failed", error, code)
@@ -93,7 +98,11 @@ def raise_for_response(response: httpx.Response) -> None:
     # Must stay above the message-based NotFound fallback below: a 409 detail
     # can mention "not found" and still has to surface as a conflict.
     if response.status_code == 409:
+        if code == "revision_conflict":
+            raise RevisionConflictError(message, error, code)
         raise ConflictError(message, error, code)
+    if response.status_code == 501:
+        raise UnsupportedByServerError(message, error, code)
     if response.status_code == 404 or "not found" in message.lower():
         raise NotFoundError(message, error, code)
     raise NetworkError(message, error, code)

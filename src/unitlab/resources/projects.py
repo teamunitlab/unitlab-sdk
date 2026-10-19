@@ -21,6 +21,8 @@ if TYPE_CHECKING:
     from unitlab.client import UnitlabClient
 
     from .annotation_imports import AnnotationImports
+    from .annotations import ItemAnnotations
+    from .groups import ProjectGroupsNamespace
     from .workflow import Workflow
 
 
@@ -179,6 +181,67 @@ class Project:
         from .workflow import Workflow
 
         return Workflow(self._client, self.id)
+
+    @property
+    def groups(self) -> ProjectGroupsNamespace:
+        """The project's Data Groups, their readiness and group layers."""
+        from .groups import ProjectGroupsNamespace
+
+        return ProjectGroupsNamespace(self._client, self.id)
+
+    def get_annotations(
+        self,
+        item,
+        *,
+        frame_start: int | None = None,
+        frame_end: int | None = None,
+        include_masks: bool = False,
+        assignment_id: str | None = None,
+    ) -> ItemAnnotations:
+        """Read one item's annotations (every page) with its ``revision``.
+
+        ``item`` is a data unit, a group tile's ``datasource_id`` or any id
+        of a project item. Change it with ``ItemAnnotations.save``.
+        """
+        from .annotations import get_annotations
+
+        return get_annotations(
+            self._client,
+            self.id,
+            identifier(item),
+            frame_start=frame_start,
+            frame_end=frame_end,
+            include_masks=include_masks,
+            assignment_id=assignment_id,
+        )
+
+    def save_annotations(
+        self,
+        item,
+        *,
+        expected_revision: str | None,
+        upsert: list[dict[str, Any]] | None = None,
+        delete: list[str] | None = None,
+        item_properties: dict[str, Any] | None = None,
+        tags: list[Any] | None = None,
+        assignment_id: str | None = None,
+        dry_run: bool = False,
+    ) -> dict[str, Any]:
+        """Add, change or delete objects of one item; others are kept."""
+        from .annotations import save_annotations
+
+        return save_annotations(
+            self._client,
+            self.id,
+            identifier(item),
+            expected_revision=expected_revision,
+            upsert=upsert,
+            delete=delete,
+            item_properties=item_properties,
+            tags=tags,
+            assignment_id=assignment_id,
+            dry_run=dry_run,
+        )
 
     @classmethod
     def _from_raw(cls, client: UnitlabClient, raw: dict[str, Any]) -> Project:

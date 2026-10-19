@@ -225,6 +225,36 @@ class Release:
             dest,
         )
 
+    @staticmethod
+    def read_groups(archive: str | Path) -> list[dict[str, Any]]:
+        """Data Group documents (``groups/*.json``) of a downloaded UUEF archive.
+
+        Each one lists its tiles (with the item document of each), its group
+        property answers and its links. An archive of another format, or
+        without groups, gives an empty list.
+        """
+        import json
+        import zipfile
+
+        path = Path(archive)
+        if not zipfile.is_zipfile(path):
+            return []
+        documents = []
+        with zipfile.ZipFile(path) as bundle:
+            for name in sorted(bundle.namelist()):
+                if name.startswith("groups/") and name.endswith(".json"):
+                    documents.append(json.loads(bundle.read(name).decode("utf-8")))
+        return documents
+
+    def download_groups(
+        self,
+        split: str | None = None,
+        *,
+        dest: str | Path | None = None,
+    ) -> list[dict[str, Any]]:
+        """Download the annotations and return their Data Group documents."""
+        return self.read_groups(self.download(split, dest=dest))
+
     def download_files(self, dest: str | Path | None = None) -> str:
         """Download the source files represented by this Release.
 
