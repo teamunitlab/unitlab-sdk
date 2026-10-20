@@ -6,7 +6,7 @@ from .embeddings import EmbeddingSpace
 from .ontologies import Ontology
 from .projects import AttachedSource, BatchQueue, DataUnit, Project, UploadBatch
 from .releases import Release
-from .workflow import Workflow, WorkflowStage, WorkflowTask
+from .workflow import TaskAnnotation, Workflow, WorkflowStage, WorkflowTask
 
 __all__ = [
     "AnnotationImport",
@@ -24,6 +24,7 @@ __all__ = [
     "Ontology",
     "Project",
     "Release",
+    "TaskAnnotation",
     "UploadBatch",
     "Workflow",
     "WorkflowStage",

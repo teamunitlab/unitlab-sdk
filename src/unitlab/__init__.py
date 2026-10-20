@@ -2,6 +2,7 @@ from importlib.metadata import version
 
 from ._grouping import tiles_from_template
 from ._scene_uploader import detect_scenes
+from .agents import AgentTaskRef, AgentWebhook, verify_agent_webhook
 from .client import UnitlabClient
 from .exceptions import (
     AmbiguousUploadCompletionError,
@@ -43,6 +44,7 @@ from .resources import (
     Ontology,
     Project,
     Release,
+    TaskAnnotation,
     UploadBatch,
     Workflow,
     WorkflowStage,
@@ -60,6 +62,8 @@ from .types import (
 __version__ = version("unitlab")
 
 __all__ = [
+    "AgentTaskRef",
+    "AgentWebhook",
     "AmbiguousUploadCompletionError",
     "AnnotationImport",
     "AnnotationImportError",
@@ -96,6 +100,7 @@ __all__ = [
     "RequestTimeoutError",
     "Shape",
     "SubscriptionError",
+    "TaskAnnotation",
     "TextAttribute",
     "TimeoutError",
     "UnitlabClient",
@@ -109,4 +114,5 @@ __all__ = [
     "__version__",
     "detect_scenes",
     "tiles_from_template",
+    "verify_agent_webhook",
 ]

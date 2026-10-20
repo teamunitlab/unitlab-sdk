@@ -1,14 +1,49 @@
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
+import httpx
+
+from .. import _task_annotations
+from .._http import error_text
+from ..exceptions import NetworkError
 from ..types import _data_type_name
 from ._base import identifier
 
 if TYPE_CHECKING:
     from unitlab.client import UnitlabClient
+
+# The server's inline limit for an Agent save (nbackend
+# docs/workflow-agent-save-spec.md, "Save"): a serialized document above it
+# goes to a signed upload link first and the save names the upload.
+INLINE_DOCUMENT_MAX_BYTES = 64 * 1024 * 1024
+# Signed storage links carry documents of hundreds of MiB; the API client's
+# 60 s budget is too short for them (release downloads use the same value).
+_STORAGE_TIMEOUT = 300.0
+# A whole-item save of tens of thousands of objects runs about a minute on
+# the server (62,640 polygons: ~70 s), past the client's default 60 s.
+_SAVE_TIMEOUT = 300.0
+
+
+def _storage_request(method: str, url: str, **kwargs: Any) -> httpx.Response:
+    """One request to a signed storage link: a large document's download or upload.
+
+    Plain ``httpx``, never the API client: the link carries its own signature
+    and the API key must not travel to another host. Errors name the HTTP
+    status only, never the link, which stays a credential until it expires.
+    """
+    try:
+        response = httpx.request(method, url, timeout=_STORAGE_TIMEOUT, **kwargs)
+        response.raise_for_status()
+    except httpx.HTTPStatusError as exc:
+        status = exc.response.status_code
+        raise NetworkError(f"Storage link answered HTTP {status}", exc) from exc
+    except httpx.HTTPError as exc:
+        raise NetworkError(error_text(exc), exc) from exc
+    return response
 
 
 class Workflow:
@@ -136,6 +171,36 @@ class WorkflowStage:
             )
             for row in rows
         ]
+
+
+@dataclass
+class TaskAnnotation:
+    """One item of a task, complete, as ``WorkflowTask.get_annotations`` returns it.
+
+    ``document`` is the item's UUEF: the same per-item JSON a UUEF release
+    exports (``uuef.schema.json``), whole whatever its size (a large one is
+    downloaded from its signed link by the SDK). ``revision`` only says which
+    version was read; UUEF saves overwrite the item and never check it.
+
+    Lidar scenes (``generic_type == "pointcloud"``, ``format == "native"``)
+    have no UUEF read yet: ``document`` is None and ``result`` holds the
+    editor's track-first result, stitched from its keyframe pages. Pass the
+    item back to ``save_annotations``.
+    """
+
+    datasource_id: str
+    generic_type: str
+    revision: str | None
+    source_url: str | None = field(default=None, repr=False)
+    format: str = "uuef"  # "uuef", or "native" for lidar
+    document: dict[str, Any] | None = field(default=None, repr=False)
+    result: dict[str, Any] | None = field(default=None, repr=False)
+    # Lidar only: what the server needs to take changes back (mode, keys), its
+    # effective part limits (_task_annotations.item_limits: objects, bytes,
+    # keyframes), and hashes of what was read (_task_annotations.snapshot).
+    _save: dict[str, Any] = field(default_factory=dict, repr=False, compare=False)
+    _limits: dict[str, Any] = field(default_factory=dict, repr=False, compare=False)
+    _base: dict[str, Any] = field(default_factory=dict, repr=False, compare=False)
 
 
 @dataclass
@@ -408,6 +473,169 @@ class WorkflowTask:
             self._client._api.post(
                 f"/api/sdk/workflow-tasks/{self.id}/model-result/",
                 json={"run_id": str(run_id), "status": "failed", "error": error},
+            )
+        )
+
+    def get_annotations(self, *, only_keyframes: bool = True) -> list[TaskAnnotation]:
+        """Read every item of this task (one per Data Group panel) as UUEF.
+
+        ``only_keyframes`` (default, as V7's flag): a track lists its stored
+        keyframes only; ``False`` lists every frame it is visible on. Both
+        save back safely, because a save keeps only frames marked
+        ``keyframe: true``. A document over the server's inline limit comes as
+        a signed ``document_url``, downloaded here without the API key, so
+        every ``item.document`` is one whole dict.
+
+        Lidar rows (``format == "native"``) keep the native read: their pages
+        are fetched and stitched into ``item.result``, every page reading the
+        version this read started from.
+        """
+        raw = self._client._api.get(
+            f"/api/sdk/workflow-tasks/{self.id}/annotations/",
+            params={"only_keyframes": "true" if only_keyframes else "false"},
+        )
+        limits = raw.get("save_limits")
+        items = []
+        for row in raw.get("items", []):
+            item = TaskAnnotation(
+                datasource_id=str(row["datasource_id"]),
+                generic_type=str(row.get("generic_type") or ""),
+                revision=None if row.get("revision") is None else str(row["revision"]),
+                source_url=row.get("source_url"),
+                format=str(row.get("format") or "uuef"),
+            )
+            if item.format == "native":
+                # KeyError on a lidar row without its save contract: guessing
+                # one would silently drop every track change at save time.
+                item._save = row["save"]
+                item.result = _task_annotations.stitch(
+                    row.get("result") or {},
+                    row.get("pages"),
+                    lambda path, params: self._client._api.get(path, params=params),
+                )
+                item._limits = _task_annotations.item_limits(item._save, limits)
+                item._base = _task_annotations.snapshot(item.result, item._save)
+            elif row.get("document_url"):
+                item.document = _storage_request("GET", row["document_url"]).json()
+            else:
+                item.document = row.get("document")
+            items.append(item)
+        return items
+
+    def save_annotations(
+        self,
+        item: TaskAnnotation,
+        document: dict[str, Any],
+        *,
+        format: str = "uuef",
+    ) -> str | None:
+        """Overwrite one item with ``document``; return its new revision.
+
+        The document replaces the item whole (nbackend
+        docs/workflow-agent-save-spec.md): objects missing from it are
+        deleted, no revision is sent and nothing is diffed, so a save made
+        meanwhile is overwritten rather than raising ``ConflictError``.
+        ``format``: ``"uuef"`` (the read's shape), ``"geojson"`` (a geospatial
+        item's RFC 7946 FeatureCollection) or ``"model"`` (an image item's
+        custom-model reply JSON); the server refuses (400) a format the
+        item's type does not take, and saves nothing. A document over
+        ``INLINE_DOCUMENT_MAX_BYTES`` is PUT to a signed upload link first and
+        the save names the upload. Afterwards ``item.revision`` is the new
+        revision and ``item.document`` the saved UUEF; after a ``geojson`` or
+        ``model`` save it is None, as only a new read shows the UUEF the
+        server built from it.
+
+        Lidar (``item.format == "native"``) keeps the native save: pass the
+        complete new ``result`` (see ``_save_native``).
+        """
+        if item.format == "native":
+            if format != "uuef":
+                raise ValueError("A lidar scene saves its native result; omit format")
+            return self._save_native(item, document)
+        path = f"/api/sdk/workflow-tasks/{self.id}/annotations/"
+        body: dict[str, Any] = {
+            "datasource_id": str(item.datasource_id),
+            "format": format,
+        }
+        # Measured as httpx 0.28 encodes a json= body (compact UTF-8); a NaN
+        # raises ValueError here, as httpx would, before anything is sent.
+        encoded = json.dumps(
+            document, ensure_ascii=False, separators=(",", ":"), allow_nan=False
+        ).encode()
+        if len(encoded) > INLINE_DOCUMENT_MAX_BYTES:
+            upload = self._client._api.post(
+                path + "uploads/", json={**body, "size": len(encoded)}
+            )
+            _storage_request(
+                "PUT",
+                upload["upload_url"],
+                content=encoded,
+                headers={"Content-Type": "application/json"},
+            )
+            body["document_upload_id"] = upload["upload_id"]
+        else:
+            body["document"] = document
+        del encoded  # the PUT below encodes the body again: one copy at a time
+        raw = self._client._api.request("PUT", path, json=body, timeout=_SAVE_TIMEOUT)
+        item.revision = str(raw["revision"])
+        item.document = document if format == "uuef" else None
+        return item.revision
+
+    def _save_native(self, item: TaskAnnotation, result: dict[str, Any]) -> str | None:
+        """Lidar's save: only what changed since ``item`` was read is sent.
+
+        A large change goes in parts within the server's limits, each an
+        ordinary save carrying the previous part's revision, so it leaves
+        several versions. A stale revision raises ``ConflictError`` (``code
+        == "revision_conflict"``); parts sent before it stay saved: read again
+        and save again, and only what is still missing goes. On success
+        ``item`` holds the new revision and result. Unchanged: nothing is
+        sent. A track larger than one save takes raises ``ValueError`` before
+        anything is sent.
+        """
+        parts = _task_annotations.plan_parts(
+            item._base, result, item._save, item._limits
+        )
+        revision = item.revision
+        for part in parts:
+            raw = self._client._api.request(
+                "PUT",
+                f"/api/sdk/workflow-tasks/{self.id}/annotations/",
+                json={
+                    "datasource_id": str(item.datasource_id),
+                    "revision": revision,
+                    "result": part,
+                },
+            )
+            revision = str(raw["revision"])
+        item.revision = revision
+        item.result = result
+        item._base = _task_annotations.snapshot(result, item._save)
+        return revision
+
+    def complete_agent(self, run_id: str) -> WorkflowTask:
+        """Finish an Agent run; the task advances through the stage's edge.
+
+        Save the item annotations with ``save_annotations`` first.
+        """
+        return self._replace(
+            self._client._api.post(
+                f"/api/sdk/workflow-tasks/{self.id}/agent-result/",
+                json={"run_id": str(run_id), "status": "complete"},
+            )
+        )
+
+    def fail_agent(self, run_id: str, error: str) -> WorkflowTask:
+        """Report a failed Agent run; the task stays in the Agent stage.
+
+        ``error`` is cut to its first 4,000 characters, the most the server
+        takes: a longer one is refused (400), which would leave the run open
+        until its 7-day timeout instead of failed now.
+        """
+        return self._replace(
+            self._client._api.post(
+                f"/api/sdk/workflow-tasks/{self.id}/agent-result/",
+                json={"run_id": str(run_id), "status": "failed", "error": error[:4000]},
             )
         )
 

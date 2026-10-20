@@ -344,6 +344,157 @@ for task in annotate.get_tasks():
 Review Tasks provide `approve()` and `reject()`. Managers can use `move()` for
 a direct stage override and `get_timeline()` to inspect Task history.
 
+### Agent webhooks (no task polling)
+
+An Agent stage tells your HTTPS webhook which tasks are ready: one event per
+task, sent as soon as it enters the stage. The webhook carries IDs only; your service reads and saves annotations with a workspace API
+key, then reports the run. A successful webhook response acknowledges delivery;
+only `complete_agent` advances the task through the stage's single outgoing edge.
+
+```python
+from unitlab import AgentWebhook, UnitlabClient
+
+client = UnitlabClient()  # workspace API key
+
+
+def handle(body: bytes, headers, secret: str) -> int:
+    """Return the HTTP status to answer the webhook with."""
+    # body: original request bytes; headers: incoming HTTP headers.
+    # secret: the signing secret configured in the Agent stage. A stage saved
+    # without one sends unsigned events: use AgentWebhook.parse(body) instead.
+    event = AgentWebhook.verify(body, headers, secret)
+    if event.is_test:  # "Test connection": acknowledge only
+        return 204
+    ref = event.task
+    task = client.get_workflow_task(ref.task_id)
+    for item in task.get_annotations():  # one item, or one per Data Group panel
+        # item.document: the item's UUEF; your_model returns a new one, or None
+        # when it changes nothing (a save always writes a new version).
+        document = your_model(item.document, item.source_url)
+        if document is not None:
+            task.save_annotations(item, document)  # replaces the item whole
+    task.complete_agent(ref.run_id)
+    # On model failure: task.fail_agent(ref.run_id, "A useful processing error")
+    return 200
+```
+
+The payload is a [CloudEvents 1.0](https://cloudevents.io/) structured JSON event
+(`Content-Type: application/cloudevents+json`,
+`type: ai.unitlab.agent.task.ready.v1`) whose `data` is:
+
+```json
+{
+  "project_id": "PROJECT_ID",
+  "workflow_id": "WORKFLOW_ID",
+  "stage_id": "STAGE_ID",
+  "task": {"task_id": "TASK_ID", "run_id": "RUN_ID", "datasource_ids": ["DATASOURCE_ID"]}
+}
+```
+
+Each event carries exactly one task (there is no batching).
+`AgentWebhook.verify` (or `parse`) returns `id`, `project_id`, `workflow_id`, `stage_id` and
+`task`, an `AgentTaskRef(task_id, run_id, datasource_ids)`. Any missing
+or wrongly typed field, or a `task` that is not one object, raises `ValueError`.
+
+The stage's **Test connection** button sends the same envelope (signed only
+when the stage has a secret) with
+`type: ai.unitlab.agent.test.v1` and `data: {"test": true, "project_id", "workflow_id",
+"stage_id", "task": null}`, where the IDs may be `null` for an unsaved workflow.
+For it `event.is_test` is `True` and `event.task` is `None`: answer `2xx` and do
+nothing else.
+
+Signatures use [Standard Webhooks](https://www.standardwebhooks.com/):
+`webhook-id`, `webhook-timestamp`, and `webhook-signature`. The secret is
+optional; a stage without one sends no `webhook-signature`.
+Verification uses HMAC-SHA256 over `id.timestamp.raw_body`, accepts `v1,BASE64`
+signatures and a 300-second clock tolerance, and supports plain configured secrets
+or `whsec_` base64 keys. Pass the original body bytes; parsing and re-encoding JSON
+changes the signed content. Keep your receiver clock synchronized.
+
+`get_annotations()` returns one `TaskAnnotation` per item with `datasource_id`,
+`generic_type`, `revision`, `source_url` (a signed media URL; empty or `None` for an item without a file),
+`format` and `document`: the item's UUEF, the same per-item JSON a UUEF release
+exports. Its JSON Schema is `uuef.schema.json`, at the root of every UUEF
+release export (`client.releases.create(project, export_type="UUEF")`). A
+large document arrives as a signed link that the SDK downloads, so `document`
+is always one whole dict. Hidden objects are included with `visible: false`.
+Tracks (video, medical) list their stored keyframes only;
+`get_annotations(only_keyframes=False)` lists every frame a track is visible
+on. Both save back safely: a save keeps only frames marked `keyframe: true`.
+
+`save_annotations(item, document)` replaces the item with `document` and
+returns the new revision. It is a whole overwrite: objects missing from the
+document are deleted, and a save made by someone else since your read is
+overwritten (no revision check, no `ConflictError`). Keep the `id` of every
+object you keep. Every object in the saved version is credited to the API
+key's creator, so skip the save when your model changed nothing. Afterwards
+`item.revision` and `item.document` hold what was saved. The save works on a
+task in any workflow stage. Two other answer formats are accepted, each also
+replacing the item whole:
+
+```python
+# Geospatial and pathology items: an RFC 7946 FeatureCollection (lon/lat, raster CRS units or pixels).
+task.save_annotations(item, feature_collection, format="geojson")
+# Image items: the custom-model reply JSON ("bboxes", "polygons", "brush", ...).
+task.save_annotations(item, model_reply, format="model")
+```
+
+A format the item's type does not take is refused (`ValidationError`, 400) and
+nothing is saved. One bad shape never refuses the whole document: a
+self-crossing outline is repaired, a shape past the media's edge is clipped, a
+shape that cannot be stored (no area) is skipped, and the rest is saved.
+
+After a `geojson` or `model` save `item.document` is `None`:
+read again to see the UUEF the server built. A document over 64 MiB is sent to
+a signed upload link first; the SDK does this for you.
+
+Lidar scenes (`generic_type == "pointcloud"`) are not UUEF yet: their `format`
+is `"native"`, `document` is `None` and `result` holds the editor's
+track-first result, `{"tracks": {"cuboids3d": {"<track id>": {"ranges":
+[[0, 21]], "value": 7, "keyframes": {"0": {...}, "20": {...}}}}},
+"item_properties": {...}}`, stitched from its pages. Save the complete new
+result with `save_annotations(item, result)`: only changed tracks are sent
+(nothing when unchanged), in parts within the server's limits, each an
+ordinary save carrying the previous part's revision. A stale revision raises
+`ConflictError` with `code == "revision_conflict"`; parts sent before it stay
+saved: read again and save again. A track larger than one save takes raises
+`ValueError` before anything is sent. Leave `segments3d` tracks as you read
+them (their points live in label arrays).
+
+The raw HTTP calls, all with `Authorization: Api-Key <key>`:
+
+| Call | Body |
+| --- | --- |
+| `GET /api/sdk/workflow-tasks/{task_id}/annotations/?only_keyframes=true` | a row has `document`, or `document_url` (GET it without the API key) |
+| `PUT /api/sdk/workflow-tasks/{task_id}/annotations/` | `{"datasource_id", "format", "document"}` or `{"datasource_id", "format", "document_upload_id"}` |
+| `POST /api/sdk/workflow-tasks/{task_id}/annotations/uploads/` | `{"datasource_id", "format", "size"}`; then PUT the JSON to the returned `upload_url` without the API key, `Content-Type: application/json` |
+| `PUT /api/sdk/workflow-tasks/{task_id}/annotations/` (lidar) | `{"datasource_id", "revision", "result"}` |
+| `GET /api/sdk/workflow-tasks/{task_id}/annotations/pages/` (lidar) | query: the item's `pages.params` plus `cursor` |
+| `POST /api/sdk/workflow-tasks/{task_id}/agent-result/` | `{"run_id", "status": "complete"}` or `{"run_id", "status": "failed", "error"}` |
+
+Delivery can repeat. Deduplicate processing by `run_id`. A run not completed
+within 7 days (fixed, not a stage setting) fails, as does one reported with
+`fail_agent` (its `error` is cut to the 4,000 characters the server takes); the
+task stays in the stage until a manager clicks Retry, which starts a new run
+with a new `run_id` and refuses results for the old one. Production receivers
+should acknowledge with `2xx` only after durable enqueueing, then process
+asynchronously. Never log signing secrets, API keys, full payloads, or signed
+media URLs.
+
+For a local smoke test, give the stage a signing secret (the sample verifies
+signatures) and run [the receiver](examples/agent_webhook.py) with it as
+`UNITLAB_AGENT_WEBHOOK_SECRET`, plus `UNITLAB_API_KEY` and, for a non-default
+API, `UNITLAB_API_URL` in its environment:
+
+```bash
+python examples/agent_webhook.py
+cloudflared tunnel --url http://127.0.0.1:8091
+```
+
+Run the tunnel command in a second terminal and put its HTTPS address in the Agent
+stage. The sample's `transform()` returns `None`, so it saves nothing and only
+completes the run; replace it with your model.
+
 ### Attach data
 
 ```python
