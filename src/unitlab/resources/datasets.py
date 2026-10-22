@@ -43,7 +43,12 @@ class DatasetsNamespace(Namespace):
         *,
         version: int | None = None,
     ) -> tuple[int | None, list[dict[str, Any]]]:
-        params = {"version": version} if version is not None else None
+        # The server's maximum page. Each page of a draft resolves the whole
+        # draft, so the default 50 read a 2,000-item draft 40 times; `next`
+        # links keep this limit for the pages after the first.
+        params: dict[str, Any] = {"limit": 300}
+        if version is not None:
+            params["version"] = version
         raw = self._api.get(f"/api/sdk/datasets/{dataset_id}/items/", params=params)
         rows = list(raw.get("results", []))
         version_number = raw.get("version_number")

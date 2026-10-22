@@ -66,38 +66,50 @@ def download_files(api, release_id: str, dest: str | Path | None = None) -> str:
         os.makedirs(os.path.dirname(file_path) or base_folder, exist_ok=True)
         if "content" in item:
             if not os.path.isfile(file_path):
-                with open(file_path, "w", encoding="utf-8") as handle:
+                # Through a `.part` file like the media below: an existing file
+                # is skipped on the next run, so a write cut short must never
+                # appear under the final name.
+                partial = f"{file_path}.part"
+                with open(partial, "w", encoding="utf-8") as handle:
                     handle.write(item["content"])
+                os.replace(partial, file_path)
         elif "source" in item and not os.path.isfile(file_path):
             pending.append((file_name, item["source"], file_path))
     if not pending:
         return base_folder
 
     async def run() -> None:
-        semaphore = asyncio.Semaphore(DOWNLOAD_CONCURRENCY)
         failures = []
 
         async def one(client, file_name, source, file_path):
-            async with semaphore:
-                partial = f"{file_path}.part"
-                try:
-                    async with client.stream("GET", source) as stream:
-                        stream.raise_for_status()
-                        with open(partial, "wb") as handle:
-                            async for chunk in stream.aiter_bytes():
-                                handle.write(chunk)
-                    os.replace(partial, file_path)
-                except Exception as exc:
-                    if os.path.exists(partial):
-                        os.remove(partial)
-                    failures.append((file_name, str(exc)))
+            partial = f"{file_path}.part"
+            try:
+                async with client.stream("GET", source) as stream:
+                    stream.raise_for_status()
+                    with open(partial, "wb") as handle:
+                        async for chunk in stream.aiter_bytes():
+                            handle.write(chunk)
+                os.replace(partial, file_path)
+            except Exception as exc:
+                if os.path.exists(partial):
+                    os.remove(partial)
+                failures.append((file_name, str(exc)))
+
+        async def worker(client, queue, progress):
+            for item in queue:
+                await one(client, *item)
+                progress.update(1)
 
         async with httpx.AsyncClient(timeout=600.0, follow_redirects=True) as client:
             with tqdm.tqdm(total=len(pending), ncols=80, disable=None) as progress:
-                tasks = [one(client, *item) for item in pending]
-                for task in asyncio.as_completed(tasks):
-                    await task
-                    progress.update(1)
+                # A fixed set of workers share one iterator, so only
+                # DOWNLOAD_CONCURRENCY tasks exist however many files are
+                # pending (one task per file held 100k tasks for 100k files).
+                queue = iter(pending)
+                workers = min(DOWNLOAD_CONCURRENCY, len(pending))
+                await asyncio.gather(
+                    *(worker(client, queue, progress) for _ in range(workers))
+                )
         if failures:
             summary = "; ".join(f"{name}: {error}" for name, error in failures[:5])
             raise NetworkError(
