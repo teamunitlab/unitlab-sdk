@@ -388,6 +388,7 @@ class Project:
         dataset_ids: Iterable[str] | None = None,
         dataset_versions: Iterable[dict[str, Any]] | None = None,
         fps: float | None = None,
+        publish_unpublished: bool = False,
     ) -> AttachPreview:
         """Validate an attachment selection without modifying the Project.
 
@@ -396,15 +397,21 @@ class Project:
             dataset_ids: Datasets whose latest published versions are attached.
             dataset_versions: Exact ``dataset_id`` and ``version_number`` pairs.
             fps: Frame rate required when selected data contains video.
+            publish_unpublished: Count datasets without a published version as
+                if ``attach()`` published them as v1 (their videos then count
+                for ``requires_fps``). The preview itself never publishes.
 
         Returns:
-            Resolved counts and validation requirements.
+            Resolved counts and validation requirements. ``unpublished_datasets``
+            lists selected datasets that have no published version yet;
+            ``skipped_files`` counts the files the attach will leave out.
         """
         payload = self._attach_payload(
             folder_ids=folder_ids,
             dataset_ids=dataset_ids,
             dataset_versions=dataset_versions,
             fps=fps,
+            publish_unpublished=publish_unpublished,
         )
         raw = self._client._api.post(
             f"/api/sdk/projects/{self.id}/attach-data/preview/",
@@ -419,6 +426,7 @@ class Project:
         dataset_ids: Iterable[str] | None = None,
         dataset_versions: Iterable[dict[str, Any]] | None = None,
         fps: float | None = None,
+        publish_unpublished: bool = False,
     ) -> AttachResult:
         """Attach published workspace data to this Project.
 
@@ -427,15 +435,32 @@ class Project:
             dataset_ids: Datasets whose latest published versions are attached.
             dataset_versions: Exact ``dataset_id`` and ``version_number`` pairs.
             fps: Frame rate required when selected data contains video.
+            publish_unpublished: Publish each dataset of ``dataset_ids`` that
+                has no published version as v1 and attach it. Off by default:
+                such datasets are left out and listed in ``skipped_datasets``.
 
         Returns:
             Created IDs, attachment counts, and an optional Batch Queue ID.
+            ``skipped_datasets`` names datasets that were not attached and
+            ``published_datasets`` those published as v1 by this call.
+            Files in library Trash, and cloud files the last sync of their
+            folder did not find in the bucket, are left out (published
+            versions keep them) and counted in ``skipped_files``.
+
+        Raises:
+            ValidationError: Nothing is left to attach (every selected dataset
+                has no published version and ``publish_unpublished`` is off);
+                the message names the datasets.
+            ConflictError: Another attach into this Project is still running
+                (the server runs one at a time so no file is attached twice).
+                Nothing was attached: retry once it has finished.
         """
         payload = self._attach_payload(
             folder_ids=folder_ids,
             dataset_ids=dataset_ids,
             dataset_versions=dataset_versions,
             fps=fps,
+            publish_unpublished=publish_unpublished,
         )
         raw = self._client._api.post(
             f"/api/sdk/projects/{self.id}/attach-data/commit/",
@@ -474,6 +499,7 @@ class Project:
         dataset_ids,
         dataset_versions,
         fps,
+        publish_unpublished=False,
     ) -> dict[str, Any]:
         payload = {
             "folder_ids": [identifier(value) for value in folder_ids or []],
@@ -484,6 +510,9 @@ class Project:
             raise ValueError("Select at least one folder or dataset.")
         if fps is not None:
             payload["fps"] = fps
+        if publish_unpublished:
+            # Sent only when asked, so older servers see the same request.
+            payload["publish_unpublished"] = True
         return payload
 
     def batch_queues(self) -> list[BatchQueue]:

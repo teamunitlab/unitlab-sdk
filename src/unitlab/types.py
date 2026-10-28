@@ -92,6 +92,13 @@ class AttachPreview:
     video_count: int = 0
     processing_video_count: int = 0
     raw: dict[str, Any] = field(default_factory=dict, repr=False, compare=False)
+    # Selected datasets without a published version, each ``{"dataset_id",
+    # "name"}``. ``attach()`` leaves them out unless ``publish_unpublished``.
+    unpublished_datasets: list[dict[str, Any]] = field(default_factory=list)
+    # Files the attach will leave out, by reason: ``{"in_trash": n,
+    # "missing_in_bucket": n}`` (library Trash; cloud files the last Re-sync
+    # did not list). Empty from a server older than 2026-10-27.
+    skipped_files: dict[str, int] = field(default_factory=dict)
 
     @classmethod
     def _from_raw(cls, raw: dict[str, Any]) -> AttachPreview:
@@ -104,6 +111,8 @@ class AttachPreview:
             video_count=int(raw.get("video_count", 0)),
             processing_video_count=int(raw.get("processing_video_count", 0)),
             raw=raw,
+            unpublished_datasets=list(raw.get("unpublished_datasets") or []),
+            skipped_files=dict(raw.get("skipped_files") or {}),
         )
 
 
@@ -119,6 +128,17 @@ class AttachResult:
     resolved_asset_count: int = 0
     attachment_ids: list[str] = field(default_factory=list)
     data_group_ids: list[str] = field(default_factory=list)
+    # Datasets left out, each ``{"dataset_id", "name", "reason", "detail"}``
+    # with reason ``unpublished`` or ``publish_failed``.
+    skipped_datasets: list[dict[str, Any]] = field(default_factory=list)
+    # Datasets published as v1 by ``publish_unpublished``, each
+    # ``{"dataset_id", "name", "version_number"}``.
+    published_datasets: list[dict[str, Any]] = field(default_factory=list)
+    # Files left out, by reason, as ``AttachPreview.skipped_files``. Counts
+    # files of the attached versions only: selected folders and files are
+    # published first, which already leaves such files out, so the preview's
+    # counts can be higher.
+    skipped_files: dict[str, int] = field(default_factory=dict)
 
     @classmethod
     def _from_raw(cls, raw: dict[str, Any]) -> AttachResult:
@@ -139,6 +159,9 @@ class AttachResult:
             data_group_ids=[
                 str(value) for value in raw.get("created_project_group_ids", [])
             ],
+            skipped_datasets=list(raw.get("skipped_datasets") or []),
+            published_datasets=list(raw.get("published_datasets") or []),
+            skipped_files=dict(raw.get("skipped_files") or {}),
         )
 
 

@@ -71,6 +71,7 @@ def test_cli_exposes_canonical_command_trees():
         "create",
         "detail",
         "add-sources",
+        "remove-assets",
         "items",
         "publish",
         "versions",
@@ -201,6 +202,72 @@ def test_dataset_list_only_lists_datasets(monkeypatch):
 
     duplicate = runner.invoke(app, ["dataset", "list", "--kind", "releases"])
     assert duplicate.exit_code != 0
+
+
+def test_project_attach_passes_publish_unpublished(monkeypatch):
+    calls = []
+    result = SimpleNamespace(
+        data_item_ids=[],
+        batch_queue_id=None,
+        created_count=0,
+        unassigned_count=0,
+        already_attached_count=0,
+        resolved_asset_count=0,
+        attachment_ids=[],
+        data_group_ids=[],
+        project_dataset_version_number=None,
+        skipped_datasets=[{"dataset_id": "d2", "name": "Bikes"}],
+        published_datasets=[],
+        skipped_files={"in_trash": 1, "missing_in_bucket": 0},
+    )
+    project = SimpleNamespace(attach=lambda **kwargs: calls.append(kwargs) or result)
+    projects = SimpleNamespace(get=lambda _pk: project)
+    client = SimpleNamespace(projects=projects)
+    monkeypatch.setattr("unitlab.cli.get_client", lambda _api_key: client)
+    project_id = "00000000-0000-0000-0000-000000000001"
+    dataset_id = "00000000-0000-0000-0000-000000000002"
+
+    default = runner.invoke(
+        app, ["project", "attach", project_id, "--dataset", dataset_id, "--json"]
+    )
+    opted = runner.invoke(
+        app,
+        [
+            "project",
+            "attach",
+            project_id,
+            "--dataset",
+            dataset_id,
+            "--publish-unpublished",
+        ],
+    )
+
+    assert default.exit_code == 0, default.stdout
+    assert opted.exit_code == 0, opted.stdout
+    assert [call["publish_unpublished"] for call in calls] == [False, True]
+    output = json.loads(default.stdout)
+    assert output["skipped_datasets"][0]["name"] == "Bikes"
+    assert output["skipped_files"] == {"in_trash": 1, "missing_in_bucket": 0}
+
+
+def test_dataset_remove_assets_sends_every_asset(monkeypatch):
+    calls = []
+    dataset = SimpleNamespace(
+        remove_assets=lambda ids: calls.append(ids) or {"removed": 2, "skipped": 0}
+    )
+    client = SimpleNamespace(datasets=SimpleNamespace(get=lambda _pk: dataset))
+    monkeypatch.setattr("unitlab.cli.get_client", lambda _api_key: client)
+    first = "00000000-0000-0000-0000-000000000001"
+    second = "00000000-0000-0000-0000-000000000002"
+
+    command = ["dataset", "remove-assets", first, "--asset", first, "--asset", second]
+    result = runner.invoke(app, [*command, "--json"])
+    missing = runner.invoke(app, ["dataset", "remove-assets", first])
+
+    assert result.exit_code == 0, result.stdout
+    assert calls == [[first, second]]
+    assert json.loads(result.stdout) == {"removed": 2, "skipped": 0}
+    assert missing.exit_code != 0
 
 
 def test_json_output_uses_public_resource_names():

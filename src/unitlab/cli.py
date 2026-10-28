@@ -649,6 +649,13 @@ def project_attach(
     dataset_version: list[str] | None = typer.Option(None, "--dataset-version"),
     fps: float | None = typer.Option(None),
     preview: bool = typer.Option(False, help="Preview without attaching"),
+    publish_unpublished: bool = typer.Option(
+        False,
+        help=(
+            "Publish each --dataset without a published version as v1 and "
+            "attach it; otherwise it is skipped"
+        ),
+    ),
     api_key: API_KEY = None,
     json_output: JSON_OUTPUT = False,
 ):
@@ -665,6 +672,7 @@ def project_attach(
         "dataset_ids": [str(value) for value in dataset or []],
         "dataset_versions": versions,
         "fps": fps,
+        "publish_unpublished": publish_unpublished,
     }
     if preview:
         emit(project.attach_preview(**selection), json_output)
@@ -681,6 +689,9 @@ def project_attach(
             "attachment_ids": result.attachment_ids,
             "data_group_ids": result.data_group_ids,
             "project_dataset_version_number": (result.project_dataset_version_number),
+            "skipped_datasets": result.skipped_datasets,
+            "published_datasets": result.published_datasets,
+            "skipped_files": result.skipped_files,
         },
         json_output,
     )
@@ -1088,7 +1099,9 @@ def dataset_list(
 @dataset_app.command(name="create", help="Create a dataset")
 def dataset_create(
     name: str,
-    folder: list[UUID] | None = typer.Option(None, "--folder"),
+    folder: list[UUID] | None = typer.Option(
+        None, "--folder", help="Folder the draft follows: its new files join it"
+    ),
     asset: list[UUID] | None = typer.Option(None, "--asset"),
     description: str = typer.Option(""),
     api_key: API_KEY = None,
@@ -1127,6 +1140,21 @@ def dataset_add_sources(
             folder_ids=[str(value) for value in folder or []],
             asset_ids=[str(value) for value in asset or []],
         )
+    )
+    emit(result, json_output)
+
+
+@dataset_app.command(name="remove-assets", help="Remove files from a dataset's draft")
+def dataset_remove_assets(
+    dataset_id: UUID,
+    asset: list[UUID] = typer.Option(..., "--asset"),
+    api_key: API_KEY = None,
+    json_output: JSON_OUTPUT = False,
+):
+    result = (
+        get_client(api_key)
+        .datasets.get(str(dataset_id))
+        .remove_assets([str(value) for value in asset])
     )
     emit(result, json_output)
 

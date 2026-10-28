@@ -114,6 +114,11 @@ print(attached.created_count)
 
 Datasets are version-first. Editing a dataset creates Unpublished changes;
 `publish_version()` freezes a version, and projects attach that published snapshot.
+A folder given to `create()` or `add_sources()` is followed: files added to it
+later join the draft, files moved out or trashed leave it, and each file keeps
+its sub-folder path. `remove_assets()` takes files out of the draft only; a
+followed folder does not bring them back until they are added again with
+`add_sources()`. Published versions never change.
 
 ### 3. Import existing cloud data
 
@@ -315,6 +320,11 @@ cloud_folder = client.assets.create_cloud_folder(
 cloud_folder.sync_cloud()  # Tiled files are registered as processing Assets.
 ```
 
+`sync_cloud()` returns `registered`, `folders`, `skipped`, `skipped_in_trash`
+and `missing`. Files you put in library Trash are not added back by a sync.
+Files the bucket no longer lists stay in the library but are left out of
+dataset drafts, new versions and attach until a later sync finds them again.
+
 ### Datasets and published versions
 
 ```python
@@ -324,11 +334,17 @@ dataset = client.datasets.create(
 )
 
 dataset.add_sources(asset_ids=["ASSET_ID"])
+dataset.remove_assets(["OTHER_ASSET_ID"])  # Draft only, like the web app.
 changes = dataset.unpublished_changes()
 version = dataset.publish_version("Added edge cases")
 versions = dataset.versions()
 items = dataset.list_items(version=version.version_number)
 ```
+
+In folder and Dataset item lists, `file_name` is the stored name, the one
+releases use; match files by it. `uploaded_name` is the name shown in the web
+app. They differ for files uploaded to a project (`a91f...3c.jpg` and
+`cat.jpg`) and are the same for files uploaded to the library.
 
 ### Workflow Tasks
 
@@ -428,8 +444,11 @@ document are deleted, and a save made by someone else since your read is
 overwritten (no revision check, no `ConflictError`). Keep the `id` of every
 object you keep. Every object in the saved version is credited to the API
 key's creator, so skip the save when your model changed nothing. Afterwards
-`item.revision` and `item.document` hold what was saved. The save works on a
-task in any workflow stage. Two other answer formats are accepted, each also
+`item.revision` and `item.document` hold what was saved. A save is the
+Agent's answer, so it works only while the task is in an Agent stage: once a
+manager moved the task out, it is refused (`ValidationError`, 400) and nothing
+is saved, like a late `complete_agent`. Reads work in any stage. Two other
+answer formats are accepted, each also
 replacing the item whole:
 
 ```python
@@ -517,6 +536,18 @@ for source in project.attached_sources():
 Video attachment may require `fps=`. Call `attach_preview()` when you need
 counts before committing; `attach()` validates the same rule and raises an
 actionable `ValidationError` if FPS is missing.
+
+A dataset in `dataset_ids` that has no published version yet is listed in
+`preview.unpublished_datasets` and left out of `attach()`; the result names it
+in `skipped_datasets`. Pass `publish_unpublished=True` to publish such datasets
+as v1 and attach them (`published_datasets`). If nothing else is selected, the
+attach is refused and names the dataset.
+
+Files in library Trash, and cloud files the last sync of their folder did not
+find in the bucket, are left out of an attach and of a new version;
+`preview.skipped_files` and `result.skipped_files` count them as
+`{"in_trash": n, "missing_in_bucket": n}`. One attach into a Project runs at a
+time: a second one meanwhile raises `ConflictError` and attaches nothing.
 
 ### Cloud storage
 
@@ -695,6 +726,7 @@ unitlab project import-cloud PROJECT_ID CLOUD_STORAGE_ID incoming/study/
 unitlab project attach PROJECT_ID --dataset DATASET_ID
 unitlab project attach PROJECT_ID --dataset DATASET_ID --preview
 unitlab project attach PROJECT_ID --dataset-version DATASET_ID:2
+unitlab project attach PROJECT_ID --dataset DATASET_ID --publish-unpublished
 
 # Assets
 unitlab assets upload ./data --folder "Raw data" --tag incoming
@@ -726,6 +758,7 @@ unitlab dataset list
 unitlab dataset create "Training set" --folder FOLDER_ID
 unitlab dataset detail DATASET_ID
 unitlab dataset add-sources DATASET_ID --asset ASSET_ID
+unitlab dataset remove-assets DATASET_ID --asset ASSET_ID
 unitlab dataset unpublished-changes DATASET_ID
 unitlab dataset publish DATASET_ID --title "Initial snapshot"
 unitlab dataset versions DATASET_ID

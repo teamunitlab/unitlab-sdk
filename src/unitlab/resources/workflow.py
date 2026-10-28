@@ -547,6 +547,12 @@ class WorkflowTask:
 
         Lidar (``item.format == "native"``) keeps the native save: pass the
         complete new ``result`` (see ``_save_native``).
+
+        Every save (and a large document's upload link) is refused with
+        ``ValidationError`` once the task is no longer in an Agent stage, e.g.
+        a manager moved it out while the Agent ran: the save is the Agent's
+        answer and must not overwrite the people's work in the new stage.
+        Nothing is saved; ``get_annotations()`` still works in any stage.
         """
         if item.format == "native":
             if format != "uuef":

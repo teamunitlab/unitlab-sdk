@@ -218,6 +218,18 @@ class Folder:
         return self._client.assets.create_folder(name, parent_id=self.id)
 
     def sync_cloud(self) -> dict[str, Any]:
+        """Re-sync one bucket level of this cloud folder (the bucket is only read).
+
+        Returns:
+            The server's counts, passed through as sent: ``registered`` (new
+            files), ``folders`` (new sub-folders), ``skipped``,
+            ``skipped_in_trash`` (files and sub-folders in library Trash: they
+            are not added again, restore them instead) and ``missing`` (this
+            folder's files the bucket no longer lists; they stay in the library
+            but are left out of dataset drafts, new versions and attach until a
+            later sync lists them again). ``busy: True`` with zero counts means
+            another sync of this folder is running.
+        """
         return self._client._api.post(
             f"/api/sdk/data-assets/folders/{self.id}/sync-cloud/"
         )
@@ -245,7 +257,7 @@ class Folder:
 
         Raises:
             ValidationError: If no confident suggestion exists, the configuration
-                is invalid, the folder is too large, or no valid groups match.
+                is invalid, or no valid groups match.
         """
         if config is None:
             suggestion = self.suggest_grouping()
@@ -274,11 +286,6 @@ class Folder:
             f"/api/sdk/data-assets/folders/{self.id}/auto-groups/",
             json=config,
         )
-        if raw.get("mode") == "async":
-            raise ValidationError(
-                "This folder is too large for automatic grouping in one call. "
-                "Split it into smaller folders and retry."
-            )
         if not raw.get("valid", True):
             errors = raw.get("errors") or ["Invalid grouping configuration."]
             raise ValidationError("; ".join(str(error) for error in errors))
@@ -295,6 +302,14 @@ class Folder:
 
 @dataclass
 class Asset:
+    """A library file.
+
+    ``file_name`` is the stored name, the one releases use (for a file uploaded
+    to a project it is a generated name such as ``a91f...3c.jpg``).
+    ``uploaded_name`` is the name shown in the web app (``cat.jpg``); for a file
+    uploaded to the library both are the same.
+    """
+
     id: str
     file_name: str
     data_type: str
@@ -306,12 +321,16 @@ class Asset:
     custom_metadata: dict[str, Any] | None = None
     created: str = ""
     upload_status: str = ""
+    # Servers older than 2026-10-28 do not send it: it then equals file_name.
+    uploaded_name: str = ""
 
     @classmethod
     def _from_raw(cls, client: UnitlabClient, raw: dict[str, Any]) -> Asset:
+        file_name = str(raw.get("file_name", ""))
         return cls(
             id=str(raw["pk"]),
-            file_name=str(raw.get("file_name", "")),
+            file_name=file_name,
+            uploaded_name=str(raw.get("uploaded_name") or file_name),
             data_type=_data_type_name(raw.get("generic_type")),
             folder_id=str(raw["folder_id"]) if raw.get("folder_id") else None,
             raw=raw,

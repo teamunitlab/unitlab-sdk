@@ -15,7 +15,12 @@ from unitlab import (
     tiles_from_template,
 )
 from unitlab.resources.assets import Asset, AssetsNamespace, Folder
-from unitlab.resources.datasets import Dataset, DatasetsNamespace, DatasetVersion
+from unitlab.resources.datasets import (
+    Dataset,
+    DatasetItem,
+    DatasetsNamespace,
+    DatasetVersion,
+)
 from unitlab.resources.ontologies import Ontology
 from unitlab.resources.projects import DataUnit, Project, ProjectsNamespace
 from unitlab.resources.releases import ReleasesNamespace
@@ -1205,3 +1210,102 @@ def test_attach_results_cover_preview_and_commit_outcomes():
     assert result.resolved_asset_count == 4
     assert result.attachment_ids == ["attachment-1"]
     assert result.data_group_ids == ["group-1"]
+
+
+def test_attach_sends_publish_unpublished_only_when_asked():
+    # Multi-dataset attach (B2): datasets without a published version are
+    # listed by the preview and skipped unless publish_unpublished is set.
+    bodies = []
+    bikes = {"dataset_id": "d2", "name": "Bikes"}
+
+    def handler(request):
+        bodies.append(json.loads(request.content))
+        if request.url.path.endswith("/preview/"):
+            return httpx.Response(200, json={"unpublished_datasets": [bikes]})
+        if bodies[-1].get("publish_unpublished"):
+            published = [{**bikes, "version_number": 1}]
+            return httpx.Response(201, json={"published_datasets": published})
+        skipped = [{**bikes, "reason": "unpublished", "detail": "Not published."}]
+        return httpx.Response(201, json={"skipped_datasets": skipped})
+
+    client = client_with_handler(handler)
+    project = Project("p1", "Project", {"pk": "p1"}, client)
+    preview = project.attach_preview(dataset_ids=["d1", "d2"])
+    skipped = project.attach(dataset_ids=["d1", "d2"])
+    published = project.attach(dataset_ids=["d2"], publish_unpublished=True)
+
+    assert preview.unpublished_datasets == [bikes]
+    assert skipped.skipped_datasets[0]["reason"] == "unpublished"
+    assert skipped.published_datasets == []
+    assert published.published_datasets == [{**bikes, "version_number": 1}]
+    assert published.skipped_datasets == []
+    assert ["publish_unpublished" in body for body in bodies] == [False, False, True]
+    assert bodies[2]["publish_unpublished"] is True
+    client.close()
+
+
+def test_attach_reports_skipped_files_by_reason():
+    # D6/A1: preview and commit count files left out (library Trash, missing
+    # in the bucket); an older server sends no key and both read as empty.
+    counts = {"in_trash": 2, "missing_in_bucket": 1}
+    preview = AttachPreview._from_raw({"skipped_files": counts})
+    result = AttachResult._from_raw({"skipped_files": {**counts, "in_trash": 0}})
+
+    assert preview.skipped_files == counts
+    assert result.skipped_files == {"in_trash": 0, "missing_in_bucket": 1}
+    assert AttachPreview._from_raw({}).skipped_files == {}
+    assert AttachResult._from_raw({}).skipped_files == {}
+
+
+def test_dataset_version_item_reports_a_file_in_trash():
+    item = DatasetItem._from_raw(object(), "d1", 1, {"pk": "di1", "in_trash": True})
+    assert item.in_trash
+    assert not DatasetItem._from_raw(object(), "d1", None, {"pk": "a1"}).in_trash
+
+
+def test_items_keep_the_stored_name_and_add_the_uploaded_name():
+    # file_name is the stored name releases use; uploaded_name the web app's.
+    # An older server sends no uploaded_name, which then reads as file_name.
+    raw = {"pk": "a1", "file_name": "a91f3c.jpg", "uploaded_name": "cat.jpg"}
+    item = DatasetItem._from_raw(object(), "d1", 1, raw)
+    asset = Asset._from_raw(object(), raw)
+
+    assert (item.file_name, item.uploaded_name) == ("a91f3c.jpg", "cat.jpg")
+    assert (asset.file_name, asset.uploaded_name) == ("a91f3c.jpg", "cat.jpg")
+    old = {"pk": "a1", "file_name": "cat.jpg"}
+    assert DatasetItem._from_raw(object(), "d1", None, old).uploaded_name == "cat.jpg"
+    assert Asset._from_raw(object(), old).uploaded_name == "cat.jpg"
+
+
+def test_remove_assets_edits_the_draft_and_reports_counts():
+    bodies = []
+
+    def handler(request):
+        assert request.url.path == "/api/sdk/datasets/d1/remove-assets/"
+        bodies.append(json.loads(request.content))
+        if bodies[-1]["asset_ids"] == ["own"]:
+            return httpx.Response(
+                400, json={"detail": "This is a project's own dataset."}
+            )
+        return httpx.Response(
+            200,
+            json={
+                "removed": 1,
+                "skipped": 1,
+                "draft_changes": {"has_changes": True, "removed": 1},
+            },
+        )
+
+    client = client_with_handler(handler)
+    dataset = Dataset("d1", "Data", "", 1, False, {"pk": "d1"}, client)
+
+    assert dataset.remove_assets(["a1", "a2"]) == {
+        "removed": 1,
+        "skipped": 1,
+        "unpublished_changes": {"has_changes": True, "removed": 1},
+    }
+    assert bodies == [{"asset_ids": ["a1", "a2"]}]
+    assert dataset.has_unpublished_changes
+    with pytest.raises(unitlab.ValidationError, match="own dataset"):
+        dataset.remove_assets(["own"])
+    client.close()

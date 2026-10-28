@@ -28,6 +28,20 @@ class DatasetsNamespace(Namespace):
         folder_ids: Iterable[str] | None = None,
         asset_ids: Iterable[str] | None = None,
     ) -> Dataset:
+        """Create a Dataset whose working draft holds the given sources.
+
+        Args:
+            name: Dataset name.
+            description: Optional description.
+            folder_ids: Folders the draft follows: files added to them or their
+                sub-folders later join the draft, files moved out or put in
+                Trash leave it, and each file keeps its sub-folder path.
+            asset_ids: Files added one by one; they stay until removed.
+
+        Returns:
+            The new Dataset. It has no published version until
+            ``publish_version()`` is called.
+        """
         payload = {
             "name": name,
             "description": description,
@@ -90,6 +104,19 @@ class Dataset:
         folder_ids: Iterable[str] | None = None,
         asset_ids: Iterable[str] | None = None,
     ) -> dict[str, Any]:
+        """Add folders and files to the working draft.
+
+        Args:
+            folder_ids: Folders the draft follows from now on, like those given
+                to ``create()``. A dataset made before datasets followed their
+                folders gets the files the folders hold now instead.
+            asset_ids: Files added one by one. Adding a file, or its folder,
+                again brings back a file removed from the draft with
+                ``remove_assets()`` or in the web app.
+
+        Returns:
+            ``added`` (files new to the draft) and ``unpublished_changes``.
+        """
         raw = self._client._api.post(
             f"/api/sdk/datasets/{self.id}/sources/",
             json={
@@ -102,6 +129,38 @@ class Dataset:
         )
         return {
             "added": raw.get("added", 0),
+            "unpublished_changes": dict(raw.get("draft_changes", {})),
+        }
+
+    def remove_assets(self, asset_ids: Iterable[str]) -> dict[str, Any]:
+        """Remove files from the working draft ("Remove from dataset" in the web app).
+
+        Only the draft changes: the files stay in the library, their folders,
+        projects and published versions. A file a followed folder supplies is
+        recorded as removed, so the folder does not bring it back; add it again
+        with ``add_sources(asset_ids=...)``.
+
+        Args:
+            asset_ids: Library file ids (``DatasetItem.id`` of a draft item).
+
+        Returns:
+            ``removed`` (files taken out), ``skipped`` (ids not in the draft)
+            and ``unpublished_changes``.
+
+        Raises:
+            ValidationError: No valid id was given, or the dataset is a
+                project's own dataset or a read-only snapshot.
+        """
+        raw = self._client._api.post(
+            f"/api/sdk/datasets/{self.id}/remove-assets/",
+            json={"asset_ids": [identifier(value) for value in asset_ids]},
+        )
+        self.has_unpublished_changes = bool(
+            raw.get("draft_changes", {}).get("has_changes", True)
+        )
+        return {
+            "removed": raw.get("removed", 0),
+            "skipped": raw.get("skipped", 0),
             "unpublished_changes": dict(raw.get("draft_changes", {})),
         }
 
@@ -122,7 +181,9 @@ class Dataset:
 
         Note:
             Publishing clears this handle's unpublished-change flag and advances
-            its current version number.
+            its current version number. Files in library Trash, and cloud files
+            the last sync of their folder did not find in the bucket, are left
+            out of the version.
         """
         raw = self._client._api.post(
             f"/api/sdk/datasets/{self.id}/versions/",
@@ -157,7 +218,9 @@ class Dataset:
             version: Published version number. Omit it to list the current draft.
 
         Returns:
-            Items captured by the selected Dataset state.
+            Items captured by the selected Dataset state. The draft leaves out
+            files in library Trash and cloud files missing from the bucket, as
+            publishing will; a version keeps them (see ``DatasetItem.in_trash``).
         """
         version_number, rows = self._client.datasets._items(
             self.id,
@@ -225,6 +288,16 @@ class DatasetVersion:
 
 @dataclass
 class DatasetItem:
+    """A file in a Dataset draft or published version.
+
+    ``file_name`` is the stored name, the one releases of an attached version
+    use (for a file uploaded to a project it is a generated name such as
+    ``a91f...3c.jpg``). ``uploaded_name`` is the name shown in the web app
+    (``cat.jpg``); for a file uploaded to the library both are the same.
+    ``current_name`` is the source file's stored name now, sent only when it
+    differs from the one the version captured.
+    """
+
     id: str
     dataset_id: str
     version_number: int | None
@@ -237,6 +310,12 @@ class DatasetItem:
     file_size: int | None = None
     tags: list[str] = field(default_factory=list)
     current_name: str | None = None
+    # A published version keeps a file moved to library Trash and marks it
+    # here; attaching the version leaves it out. Always False for a draft,
+    # which hides such files.
+    in_trash: bool = False
+    # Servers older than 2026-10-28 do not send it: it then equals file_name.
+    uploaded_name: str = ""
 
     @classmethod
     def _from_raw(
@@ -246,11 +325,13 @@ class DatasetItem:
         version_number: int | None,
         raw: dict[str, Any],
     ) -> DatasetItem:
+        file_name = str(raw.get("file_name", ""))
         return cls(
             id=str(raw["pk"]),
             dataset_id=dataset_id,
             version_number=version_number,
-            file_name=str(raw.get("file_name", "")),
+            file_name=file_name,
+            uploaded_name=str(raw.get("uploaded_name") or file_name),
             data_type=_data_type_name(raw.get("generic_type")),
             folder_path=str(raw.get("folder_path", "")),
             split=str(raw.get("split", "")),
@@ -263,4 +344,5 @@ class DatasetItem:
             current_name=(
                 str(raw["current_name"]) if raw.get("current_name") else None
             ),
+            in_trash=bool(raw.get("in_trash", False)),
         )
