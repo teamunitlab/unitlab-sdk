@@ -33,7 +33,10 @@ TILED_MULTIPART_MIN_TIFF_BYTES = 8 * 1024 * 1024
 # production API sits behind a proxy that rejects larger request bodies, so the
 # route is chosen by size up front, never by trying the POST first. 64 MiB is
 # one multipart part and leaves room under that cap for the form's overhead.
-DIRECT_UPLOAD_GENERIC_TYPES = {"video", "medical", "audio", "document"}
+DIRECT_UPLOAD_GENERIC_TYPES = {"video", "medical", "audio", "document", "timeseries"}
+# A chart CSV has no size limit on the server: absent from the server's
+# `direct_max_file_sizes`, it is sent direct with no client-side ceiling.
+UNCAPPED_DIRECT_GENERIC_TYPES = {"timeseries"}
 DIRECT_UPLOAD_MIN_BYTES = 64 * 1024 * 1024
 DIRECT_FAMILY_SIMPLE_UPLOAD_MAX_BYTES = 100 * 1024 * 1024
 AMBIGUOUS_TIFF_EXTENSIONS = {"tif", "tiff"}
@@ -145,9 +148,21 @@ def _declared_type(path: Path, generic_type: str | None) -> str | None:
 
 
 def _declared_fields(path: Path, generic_type: str | None) -> dict[str, Any] | None:
-    """Return the ``initiate`` fields that state this file's data type, if any."""
+    """Return the ``initiate`` fields that state this file's data type, if any.
+
+    A CSV sent without a data type keeps its family open (chart or rows) on
+    the server, as its form upload does.
+    """
     declared = _declared_type(path, generic_type)
-    return {"generic_type": declared} if declared else None
+    if declared:
+        return {"generic_type": declared}
+    if _is_undeclared_csv(path, generic_type):
+        return {"defer_csv_configuration": True}
+    return None
+
+
+def _is_undeclared_csv(path: Path, generic_type: str | None) -> bool:
+    return generic_type is None and extension_for_filename(path.name) == "csv"
 
 
 def collect_files(source: str | Path, accepted: set[str] | None = None) -> list[Path]:
@@ -594,10 +609,11 @@ def _project_files(
         max_size = max_sizes.get(file_generic_type)
         if file_generic_type not in max_sizes and project_type and fallback is not None:
             max_size = int(fallback)
-        if file_generic_type in direct_max_sizes and _should_use_direct_upload(
-            path, file_generic_type
-        ):
-            max_size = direct_max_sizes[file_generic_type]
+        if _should_use_direct_upload(path, file_generic_type):
+            if file_generic_type in direct_max_sizes:
+                max_size = direct_max_sizes[file_generic_type]
+            elif file_generic_type in UNCAPPED_DIRECT_GENERIC_TYPES:
+                max_size = None
         if max_size is None or path.stat().st_size <= max_size:
             result.append(path)
         else:
@@ -658,6 +674,8 @@ async def _upload_project_async(
                         initiate_fields["fps"] = fps
                     if declared_type is not None:
                         initiate_fields["generic_type"] = declared_type
+                    elif _is_undeclared_csv(path, generic_type):
+                        initiate_fields["defer_csv_configuration"] = True
                     tasks.append(
                         _upload_file(
                             client,
