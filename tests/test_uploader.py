@@ -797,3 +797,51 @@ def test_asset_upload_preserves_authentication_error(tmp_path):
     with pytest.raises(AuthenticationError, match="Invalid API key"):
         client.assets.upload(tmp_path)
     client.close()
+
+
+def test_large_csv_goes_direct_without_a_client_ceiling(monkeypatch, tmp_path):
+    monkeypatch.setattr(_uploader, "DIRECT_UPLOAD_MIN_BYTES", 4)
+    path = tmp_path / "sensors.csv"
+    path.write_bytes(b"time,value\n" + b"1,2\n" * 10)
+    upload_info = {
+        "accepted_formats": ["csv"],
+        "max_file_sizes": {"timeseries": 10},
+        "direct_max_file_sizes": {"video": 500},
+        "generic_type": None,
+    }
+
+    accepted, failures = _uploader._project_files(path, upload_info)
+
+    assert accepted == [path]
+    assert failures == []
+
+
+def test_small_csv_keeps_the_form_ceiling(tmp_path):
+    path = tmp_path / "sensors.csv"
+    path.write_bytes(b"time,value\n" + b"1,2\n" * 10)
+    upload_info = {
+        "accepted_formats": ["csv"],
+        "max_file_sizes": {"timeseries": 10},
+        "direct_max_file_sizes": {},
+        "generic_type": None,
+    }
+
+    accepted, failures = _uploader._project_files(path, upload_info)
+
+    assert accepted == []
+    assert [failure.path for failure in failures] == [path]
+
+
+def test_undeclared_csv_keeps_its_family_open_on_direct_upload(tmp_path):
+    csv_path = tmp_path / "sensors.csv"
+    csv_path.write_bytes(b"time,value\n1,2\n")
+    video_path = tmp_path / "clip.mp4"
+    video_path.write_bytes(b"video")
+
+    assert _uploader._declared_fields(csv_path, None) == {
+        "defer_csv_configuration": True
+    }
+    assert _uploader._declared_fields(csv_path, "timeseries") == {
+        "generic_type": "timeseries"
+    }
+    assert _uploader._declared_fields(video_path, None) is None

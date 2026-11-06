@@ -212,6 +212,11 @@ also upload directly to storage, up to 500 MiB each; smaller ones keep the
 ordinary upload. A large medical file becomes one volume on its own and is not
 grouped with other files of the batch into a series.
 
+A time-series CSV larger than 64 MiB uploads directly to storage too, with no
+size or row limit. The server reads it after the upload, so its item stays
+processing for a while; a CSV sent without a data type then waits for its
+chart or rows choice, exactly like a smaller one.
+
 DICOM files named without a usable extension (`IM00001`, or a UID) are found by
 their content when a folder is uploaded and are sent as medical; nothing needs
 to be renamed.
