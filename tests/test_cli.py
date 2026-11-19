@@ -348,6 +348,70 @@ def test_project_upload_exits_nonzero_on_partial_failure(monkeypatch, tmp_path):
     assert "show_progress" not in calls[0][1]
 
 
+def test_project_upload_benchmark_flag_marks_and_reports(monkeypatch, tmp_path):
+    calls = []
+    counts = {"created": 2, "existing": 1, "deferred": 0, "skipped_by_reason": {}}
+    batch = SimpleNamespace(
+        total=3, uploaded=3, failed=[], batch_queue_id="queue-1", benchmarks=counts
+    )
+    project = SimpleNamespace(
+        upload=lambda source, **kwargs: calls.append(kwargs) or batch
+    )
+    monkeypatch.setattr(
+        "unitlab.cli.get_client",
+        lambda _api_key: SimpleNamespace(
+            projects=SimpleNamespace(get=lambda _project_id: project)
+        ),
+    )
+    args = ["project", "upload", "00000000-0000-0000-0000-000000000001"]
+    args += ["--source", str(tmp_path), "--benchmark"]
+
+    as_json = runner.invoke(app, [*args, "--json"])
+    as_text = runner.invoke(app, args)
+
+    assert (as_json.exit_code, as_text.exit_code) == (0, 0)
+    assert calls == [{"fps": 1.0, "benchmark": True}] * 2
+    assert json.loads(as_json.stdout)["benchmarks"] == counts
+    assert "Benchmarks: 2 created, 1 existing" in as_text.stdout
+
+
+def test_project_upload_warns_and_fails_when_marking_fails(monkeypatch, tmp_path):
+    counts = {
+        "created": 0,
+        "existing": 0,
+        "deferred": 0,
+        "skipped_by_reason": {},
+        "error": "This Unitlab server cannot mark benchmarks yet.",
+        "unmarked_ids": ["item-1", "item-2"],
+    }
+    batch = SimpleNamespace(
+        total=2, uploaded=2, failed=[], batch_queue_id="queue-1", benchmarks=counts
+    )
+    project = SimpleNamespace(upload=lambda source, **kwargs: batch)
+    monkeypatch.setattr(
+        "unitlab.cli.get_client",
+        lambda _api_key: SimpleNamespace(
+            projects=SimpleNamespace(get=lambda _project_id: project)
+        ),
+    )
+    args = ["project", "upload", "00000000-0000-0000-0000-000000000001"]
+    args += ["--source", str(tmp_path), "--benchmark"]
+
+    as_json = runner.invoke(app, [*args, "--json"])
+    as_text = runner.invoke(app, args)
+
+    assert (as_json.exit_code, as_text.exit_code) == (1, 1)
+    assert json.loads(as_json.stdout)["benchmarks"]["unmarked_ids"] == [
+        "item-1",
+        "item-2",
+    ]
+    for result in (as_json, as_text):
+        assert "2 uploaded items were not marked as benchmarks" in result.stderr
+        assert "cannot mark benchmarks yet. They are in Batch Queue queue-1" in (
+            result.stderr
+        )
+
+
 def test_assets_cli_supports_custom_metadata(monkeypatch, tmp_path):
     calls = []
     metadata = {"region": "CA-BC", "camera": {"settings": ["night"]}}

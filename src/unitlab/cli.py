@@ -588,12 +588,22 @@ def upload(
     data_type: DATA_TYPE = None,
     dry_run: DRY_RUN = False,
     split_sensor_folders: SPLIT_SENSOR_FOLDERS = False,
+    benchmark: Annotated[
+        bool,
+        typer.Option(
+            "--benchmark",
+            help="Make the uploaded items benchmarks (draft answer keys)",
+        ),
+    ] = False,
     json_output: JSON_OUTPUT = False,
 ):
     scene_options = _scene_options(data_type, dry_run, split_sensor_folders)
     if dry_run:
         _emit_scene_preview(source, split_sensor_folders, json_output)
         return
+    if benchmark:
+        # Passed only when given, like the scene options.
+        scene_options["benchmark"] = True
     client = get_client(api_key)
     batch = client.projects.get(str(pk)).upload(
         source,
@@ -601,19 +611,35 @@ def upload(
         **scene_options,
     )
     if json_output:
-        emit(
-            {
-                "total": batch.total,
-                "uploaded": batch.uploaded,
-                "failed": len(batch.failed),
-                "batch_queue_id": batch.batch_queue_id,
-            },
-            True,
-        )
+        summary = {
+            "total": batch.total,
+            "uploaded": batch.uploaded,
+            "failed": len(batch.failed),
+            "batch_queue_id": batch.batch_queue_id,
+        }
+        if benchmark:
+            summary["benchmarks"] = batch.benchmarks
+        emit(summary, True)
     else:
         unit = "scenes" if data_type == SCENE_TYPE else "files"
         typer.echo(f"Uploaded {batch.uploaded} of {batch.total} {unit}")
-    if batch.failed:
+        if benchmark and batch.benchmarks:
+            counts = batch.benchmarks
+            typer.echo(
+                f"Benchmarks: {counts['created']} created, "
+                f"{counts['existing']} existing, "
+                f"{counts['deferred']} marked once processed"
+            )
+    marking_error = benchmark and batch.benchmarks and batch.benchmarks.get("error")
+    if marking_error:
+        typer.echo(
+            f"Warning: {len(batch.benchmarks['unmarked_ids'])} uploaded items "
+            f"were not marked as benchmarks: {marking_error.rstrip('.')}. "
+            f"They are in Batch Queue {batch.batch_queue_id}; mark them with "
+            "Project.mark_benchmarks() (--json lists unmarked_ids).",
+            err=True,
+        )
+    if batch.failed or marking_error:
         raise typer.Exit(code=1)
 
 

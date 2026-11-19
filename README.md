@@ -620,6 +620,29 @@ kept, unchanged and skipped counts when applicable. A stale preview raises
 commit response is lost, repeat the same batch's `commit()` with the same
 decisions; the server returns the saved report without duplicating labels.
 
+To upload benchmark answer keys, upload the media first (`batch.wait()`), then
+pass `benchmark=True` to `create()`. The labels go into each matched item's
+hidden benchmark key; the item and its own labels are untouched, an existing
+key is replaced, and Data Group panels fill the group's key. Add
+`approve_keys=True` to approve each non-empty key when the import commits
+(`approve_keys` without `benchmark` raises `ValueError`). Both are sent as
+import options; `batch.refresh(options={...})` keeps them. The commit
+report then has a `benchmarks` entry with `created`, `replaced`, `approved`,
+`not_approved` (keys left as drafts, with the reason) and `items`.
+
+Files without labels become benchmarks with
+`project.upload("./gold", benchmark=True)` (CLI: `unitlab project upload ...
+--benchmark`), or later with `project.mark_benchmarks(batch.data_item_ids)`.
+Items still processing are marked when they finish; failed files are not
+marked. `batch.benchmarks` holds the `created`, `existing`, `deferred` and
+`skipped_by_reason` counts. Add the keys' labels with
+`annotation_imports.create(..., benchmark=True)` or in the web editor; keys
+stay drafts until approved. If marking fails, `upload()` still returns the
+batch: `batch.benchmarks["error"]` says why and
+`project.mark_benchmarks(batch.benchmarks["unmarked_ids"])` retries (the CLI
+warns and exits 1). `mark_benchmarks()` itself raises; on a server without
+this route that is `UnitlabError` with `code="benchmarks_unsupported"`.
+
 For annotations already in connected storage, omit the local file and pass
 `cloud_storage=storage`, `annotation_key="labels/predictions.json"`, and optionally
 `frame_mapping_key="labels/frames.json"`. Keys are relative to that connection's

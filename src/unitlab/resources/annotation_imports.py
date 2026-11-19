@@ -23,6 +23,26 @@ MAX_FILE_BYTES = 80 * 1024 * 1024
 SERVER_WORK_TIMEOUT = 300
 
 
+def _check_benchmark_preview(
+    options: dict[str, Any], preview: dict[str, Any], batch_id: str
+) -> None:
+    """Refuse a benchmark import the server previewed as an ordinary one.
+
+    A server without benchmark imports ignores the unknown ``benchmark``
+    option and would commit the labels onto the items themselves. A server
+    that has them always answers with a top-level ``benchmark`` block, so its
+    absence means the option was dropped. The preview writes nothing, so
+    refusing here (and again before ``commit``) leaves nothing behind.
+    """
+    if options.get("benchmark") and "benchmark" not in preview:
+        raise AnnotationImportError(
+            "This Unitlab server does not support benchmark imports yet; "
+            "nothing was imported.",
+            code="benchmark_unsupported",
+            batch_id=batch_id,
+        )
+
+
 class AnnotationImports(Namespace):
     """Preview and commit labels for media already linked to a Project."""
 
@@ -55,6 +75,8 @@ class AnnotationImports(Namespace):
         frame_mapping_key: str | None = None,
         track_profile: Literal["none", "attributes.track_id"] = "none",
         options: dict[str, Any] | None = None,
+        benchmark: bool = False,
+        approve_keys: bool = False,
     ) -> AnnotationImport:
         """Upload COCO, Unitlab export or native JSON and return a label preview.
 
@@ -67,6 +89,18 @@ class AnnotationImports(Namespace):
         ``options`` accepts media/class/object/review mappings and ``stable_ids``
         (false by default). Enable stable IDs only if the exporter preserves them.
         COCO video requires an explicit frame mapping file or storage key.
+
+        ``benchmark=True`` writes the labels into each matched item's hidden
+        benchmark answer key instead of the item: the item and its own labels
+        are untouched, an existing key is replaced, and Data Group panels fill
+        the group's key. ``approve_keys=True`` (only with ``benchmark=True``)
+        approves each non-empty key when the import commits; a key the server
+        refuses stays a draft and is listed in the report. Media must already be
+        in the project: upload, then ``UploadBatch.wait()``. Both are sent as
+        ``options`` keys; a ``True`` keyword overrides the same key in
+        ``options``, and ``refresh(options=...)`` keeps them. A server
+        without benchmark imports raises ``AnnotationImportError``
+        (``code="benchmark_unsupported"``) here, before anything is written.
         """
         local = annotation_file is not None
         cloud = cloud_storage is not None and bool(annotation_key)
@@ -88,6 +122,15 @@ class AnnotationImports(Namespace):
             raise ValueError("Unknown track_profile.")
 
         import_options = deepcopy(options or {})
+        # Only True is written, so imports without the flags send the same
+        # options as before and a default False never clears a caller's key.
+        if benchmark:
+            import_options["benchmark"] = True
+        if approve_keys:
+            import_options["approve_keys"] = True
+        # The server answers 400 for this; refuse before uploading the file.
+        if import_options.get("approve_keys") and not import_options.get("benchmark"):
+            raise ValueError("approve_keys requires benchmark=True.")
         data: dict[str, Any] = {
             "track_profile": track_profile,
             "options": import_options,
@@ -138,6 +181,7 @@ class AnnotationImports(Namespace):
                     self._endpoint, json=data, timeout=SERVER_WORK_TIMEOUT
                 )
 
+        _check_benchmark_preview(import_options, raw, str(raw["batch_id"]))
         return AnnotationImport(
             id=str(raw["batch_id"]),
             project_id=self.project_id,
@@ -167,11 +211,28 @@ class AnnotationImport:
         Omit ``options`` to preserve them; supply a dict to replace them entirely.
         Examine the new preview before committing it. Committed batches cannot
         be refreshed; create another batch with the same source for reimports.
+        A benchmark batch keeps ``benchmark`` and, unless ``options`` names it,
+        ``approve_keys``; ``"benchmark": False`` raises ``ValueError``. A
+        benchmark preview without its ``benchmark`` block raises
+        ``AnnotationImportError`` and ``commit()`` refuses the batch.
         """
         value = deepcopy(self._options if options is None else options)
+        # Replacing options must not turn a benchmark batch into an ordinary
+        # one: its commit would write the labels onto the live items.
+        if self._options.get("benchmark"):
+            if "benchmark" in value and not value["benchmark"]:
+                raise ValueError(
+                    "A benchmark import stays a benchmark import; "
+                    "start a new one instead."
+                )
+            value["benchmark"] = True
+            if "approve_keys" not in value and self._options.get("approve_keys"):
+                value["approve_keys"] = True
         preview = self._client._api.post(f"{self._endpoint}preview/", json=value)
         self.preview = preview
         self._options = value
+        # After storing it, so commit() refuses this batch too.
+        _check_benchmark_preview(value, preview, self.id)
         return self
 
     def commit(
@@ -189,13 +250,20 @@ class AnnotationImport:
         successful commit returns its original report without duplicating labels,
         so after a timeout or a dropped connection call ``commit`` again with
         the same arguments. ``timeout`` is in seconds (the server checks every
-        item again first, which can take over a minute).
+        item again first, which can take over a minute). A benchmark import's
+        report also has ``benchmarks``: ``created``, ``replaced`` and
+        ``approved`` counts, ``not_approved`` (``name``, ``reason``) and
+        ``items`` (``reference``, ``gold_label_id``, ``datasource_id``,
+        ``group_id``).
 
         Raises:
             AnnotationImportError: Blocked records or file issues and
                 ``allow_partial=False``; ``rows`` and ``issues`` list them from
-                this preview, and nothing was written.
+                this preview, and nothing was written. Also raised, with
+                ``code="benchmark_unsupported"``, when ``benchmark`` was
+                requested and the server previewed an ordinary import.
         """
+        _check_benchmark_preview(self._options, self.preview, self.id)
         try:
             return self._client._api.post(
                 f"{self._endpoint}commit/",

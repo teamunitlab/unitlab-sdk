@@ -1,13 +1,17 @@
 from __future__ import annotations
 
 import sys
+from collections import Counter
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
+from uuid import UUID
 
 from .. import _scene_uploader, _uploader
+from .._http import error_text
 from .._waiter import wait_for_processing
+from ..exceptions import NetworkError, UnitlabError
 from ..types import (
     AttachPreview,
     AttachResult,
@@ -22,6 +26,26 @@ if TYPE_CHECKING:
 
     from .annotation_imports import AnnotationImports
     from .workflow import Workflow
+
+# The server marks at most 100 items per request (the web's set-gold cap).
+BENCHMARK_BATCH_SIZE = 100
+
+
+def _benchmark_route_missing(exc: NetworkError) -> bool:
+    """Whether a marking error means the server has no benchmarks/ route.
+
+    405 always does. A 404 does only without a JSON body: Django answers an
+    unrouted URL with an HTML page, while the route's own 404 (a project the
+    key cannot see) is JSON and keeps its NotFoundError.
+    """
+    response = getattr(exc.detail, "response", None)
+    if response is None:
+        return False
+    if response.status_code == 405:
+        return True
+    return response.status_code == 404 and "json" not in response.headers.get(
+        "content-type", ""
+    )
 
 
 class ProjectsNamespace(Namespace):
@@ -268,6 +292,7 @@ class Project:
         batch_size: int = 100,
         split_sensor_folders: bool = False,
         max_concurrent_uploads: int = _uploader.UPLOAD_CONCURRENCY,
+        benchmark: bool = False,
     ) -> UploadBatch:
         """Upload local files into this Project.
 
@@ -289,6 +314,15 @@ class Project:
             max_concurrent_uploads: Files sent at the same time (default 20).
                 Lower it for a slow or local server; a file whose request
                 times out is reported in ``failed``.
+            benchmark: Make every uploaded item (lidar scenes too) a benchmark
+                with ``mark_benchmarks`` once the upload ends; items still
+                processing are marked when they finish. Failed files are not
+                marked. The counts are in ``UploadBatch.benchmarks``. A
+                marking error never raises here (the files are uploaded):
+                ``benchmarks["error"]`` then holds its message and
+                ``benchmarks["unmarked_ids"]`` the items to pass to
+                ``mark_benchmarks`` again. DICOM series are marked by the IDs
+                their files were uploaded with; the server resolves them.
 
         Returns:
             Local upload results and the server-side Batch Queue ID. Server
@@ -336,7 +370,103 @@ class Project:
             raw=result.responses,
             _client=self._client,
         )
+        if benchmark and batch.data_item_ids:
+            # Never raise here: the files are uploaded, and losing the batch
+            # (its IDs, failures and the counts already marked) would leave
+            # the caller nothing to retry with. Marking is idempotent.
+            counts, unmarked, error = self._mark_batches(
+                batch.data_item_ids, when_ready=True
+            )
+            batch.benchmarks = {
+                **counts,
+                "error": error_text(error) if error else None,
+                "unmarked_ids": unmarked,
+            }
         return batch
+
+    def mark_benchmarks(
+        self, datasource_ids: Iterable[str], *, when_ready: bool = True
+    ) -> dict[str, Any]:
+        """Make items of this Project benchmarks (hidden answer keys).
+
+        Each item gets a draft key that starts from its current labels (none
+        for a fresh upload); the item itself is unchanged. Add the key's
+        labels with ``annotation_imports.create(..., benchmark=True)`` or draw
+        them in the web editor. A key stays a draft until it is approved;
+        marking never approves. Marking is idempotent: an item that already
+        has a benchmark counts as ``existing``, so after an error call again.
+
+        Args:
+            datasource_ids: Item IDs, such as ``UploadBatch.data_item_ids``.
+                Sent 100 per request.
+            when_ready: Mark items that are still processing as soon as they
+                finish (counted in ``deferred``) instead of skipping them as
+                ``not_ready``.
+
+        Returns:
+            ``created``, ``existing`` and ``deferred`` counts and
+            ``skipped_by_reason`` (reason: count), summed over all requests.
+
+        Raises:
+            ValueError: No IDs or one that is not a UUID; nothing was sent.
+            UnitlabError: The first failing request's error; the requests
+                before it were applied. ``code="benchmarks_unsupported"`` when
+                the server has no benchmark route.
+        """
+        if isinstance(datasource_ids, str):
+            raise ValueError("Pass a list of item IDs.")
+        ids: list[str] = []
+        for value in datasource_ids:
+            try:
+                ids.append(str(UUID(identifier(value))))
+            except ValueError:
+                raise ValueError(f"Not an item ID: {value!r}") from None
+        ids = list(dict.fromkeys(ids))
+        if not ids:
+            raise ValueError("Select at least one item.")
+        counts, _unmarked, error = self._mark_batches(ids, when_ready=when_ready)
+        if error is not None:
+            raise error
+        return counts
+
+    def _mark_batches(
+        self, ids: list[str], *, when_ready: bool
+    ) -> tuple[dict[str, Any], list[str], Exception | None]:
+        """POST ``ids`` 100 at a time, stopping at the first failing request.
+
+        Returns the counts summed over the requests that succeeded, the IDs
+        from the failing request on, and its error (None when all succeeded),
+        so ``upload`` keeps its batch and ``mark_benchmarks`` raises.
+        """
+        totals = {"created": 0, "existing": 0, "deferred": 0}
+        skipped: Counter[str] = Counter()
+        for start in range(0, len(ids), BENCHMARK_BATCH_SIZE):
+            try:
+                raw = self._client._api.post(
+                    f"/api/sdk/projects/{self.id}/benchmarks/",
+                    json={
+                        "datasource_ids": ids[start : start + BENCHMARK_BATCH_SIZE],
+                        "when_ready": when_ready,
+                    },
+                )
+                for key in totals:
+                    totals[key] += int(raw.get(key) or 0)
+                skipped.update(raw.get("skipped_by_reason") or {})
+            except Exception as exc:
+                error: Exception = exc
+                if isinstance(exc, NetworkError) and _benchmark_route_missing(exc):
+                    error = UnitlabError(
+                        "This Unitlab server cannot mark benchmarks yet.",
+                        exc,
+                        "benchmarks_unsupported",
+                    )
+                    error.__cause__ = exc
+                return (
+                    {**totals, "skipped_by_reason": dict(skipped)},
+                    ids[start:],
+                    error,
+                )
+        return {**totals, "skipped_by_reason": dict(skipped)}, [], None
 
     def import_cloud(
         self,
@@ -565,6 +695,9 @@ class UploadBatch:
     data_item_ids: list[str]
     raw: list[dict[str, Any]] = field(repr=False)
     _client: UnitlabClient = field(repr=False, compare=False)
+    # ``upload(benchmark=True)``: the ``mark_benchmarks`` counts plus
+    # ``error`` (None, or why marking stopped) and ``unmarked_ids``.
+    benchmarks: dict[str, Any] | None = None
 
     def status(self) -> ProcessingStatus:
         if not self.batch_queue_id:
