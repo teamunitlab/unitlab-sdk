@@ -36,6 +36,12 @@ TILED_MULTIPART_MIN_TIFF_BYTES = 8 * 1024 * 1024
 DIRECT_UPLOAD_GENERIC_TYPES = {"video", "medical", "audio", "document"}
 DIRECT_UPLOAD_MIN_BYTES = 64 * 1024 * 1024
 DIRECT_FAMILY_SIMPLE_UPLOAD_MAX_BYTES = 100 * 1024 * 1024
+# Direct form uploads (3.2.1): a server that stores uploads in the Region that
+# serves them (`upload-info.direct_uploads`) takes files the form POST would
+# carry as a multipart upload into that Region's bucket; its `complete` then
+# runs the unchanged form code on the stored object. One initiate signs at
+# most this many files (the server's DIRECT_FORM_INITIATE_MAX_FILES).
+_DIRECT_INITIATE_BATCH = 50
 AMBIGUOUS_TIFF_EXTENSIONS = {"tif", "tiff"}
 GEOSPATIAL_TILED_EXTENSIONS = {
     "jp2",
@@ -258,11 +264,55 @@ def _should_use_tiled_multipart(path: Path) -> bool:
     )
 
 
-def _should_use_direct_upload(path: Path, generic_type: str | None) -> bool:
+def _should_use_direct_upload(
+    path: Path, generic_type: str | None, *, images: bool = False
+) -> bool:
+    """Return True when the file goes through the tiled multipart routes.
+
+    ``images``: the server takes form-path files direct, so pictures above
+    the threshold take the multipart routes too, as the web uploader does
+    (the server's tiled initiate accepts ``img``). Off, they keep the form
+    POST exactly as before 3.2.1.
+    """
     return (
         generic_type in DIRECT_UPLOAD_GENERIC_TYPES
-        and path.stat().st_size > DIRECT_UPLOAD_MIN_BYTES
+        or (images and generic_type == "img")
+    ) and path.stat().st_size > DIRECT_UPLOAD_MIN_BYTES
+
+
+def _goes_direct(path: Path, generic_type: str | None, *, images: bool) -> bool:
+    """Return True for a file the form POST would carry and initiate accepts.
+
+    Tiled and large direct-family files keep their multipart routes; an empty
+    file or one above the form POST's 100 MiB is refused at initiate, so it
+    keeps the POST, which gives the real error.
+    """
+    return (
+        not _should_use_direct_upload(path, generic_type, images=images)
+        and not _should_use_tiled_multipart(path)
+        and 0 < path.stat().st_size <= DIRECT_FAMILY_SIMPLE_UPLOAD_MAX_BYTES
     )
+
+
+def _checked_parts(initiated: dict[str, Any], file_size: int) -> tuple[int, list]:
+    """Return an initiate answer's part size and its part URLs in order.
+
+    Raises KeyError/TypeError/ValueError when the answer cannot cover the file.
+    """
+    part_size = int(initiated["part_size"])
+    part_urls = list(initiated["part_urls"])
+    if part_size < 1 or not part_urls:
+        raise ValueError("missing multipart fields")
+    part_urls.sort(key=lambda part: int(part["part_number"]))
+    if [int(part["part_number"]) for part in part_urls] != list(
+        range(1, len(part_urls) + 1)
+    ):
+        raise ValueError("invalid multipart part numbers")
+    if len(part_urls) != max(1, (file_size + part_size - 1) // part_size) or any(
+        not part.get("url") for part in part_urls
+    ):
+        raise ValueError("invalid multipart part URLs")
+    return part_size, part_urls
 
 
 async def _put_tiled_part(
@@ -274,7 +324,15 @@ async def _put_tiled_part(
     start: int,
     size: int,
     get_url: Callable[[str | None], Awaitable[str]] | None = None,
+    headers: dict[str, str] | None = None,
 ) -> str:
+    # `headers`: what a direct form upload's single-PUT URL signs (the
+    # object's Content-Type and Cache-Control, and `If-None-Match: *`: it
+    # stores only a missing object, a repeat answers 412), sent verbatim;
+    # storage refuses the PUT without them. Multipart part URLs list none.
+    # No retry where sending the bytes again cannot pass, so the caller's
+    # fallback runs at once: a 412, and a 403 on a URL nobody renews (no
+    # `get_url`; tiled parts get a fresh URL through it).
     last_error: Exception | None = None
     rejected_url = None
     for attempt in range(TILED_PART_MAX_ATTEMPTS):
@@ -285,7 +343,7 @@ async def _put_tiled_part(
                 response = await client.put(
                     url,
                     content=_FilePartStream(path, start, size),
-                    headers={"Content-Length": str(size)},
+                    headers={"Content-Length": str(size), **(headers or {})},
                 )
                 rejected_url = url if response.status_code == 403 else None
             response.raise_for_status()
@@ -295,6 +353,9 @@ async def _put_tiled_part(
             return etag.strip('"')
         except (httpx.HTTPError, OSError, NetworkError) as exc:
             last_error = exc
+            status = getattr(getattr(exc, "response", None), "status_code", None)
+            if status == 412 or (status == 403 and get_url is None):
+                break
             if attempt + 1 < TILED_PART_MAX_ATTEMPTS:
                 await asyncio.sleep(TILED_PART_RETRY_DELAY_SECONDS * (attempt + 1))
     raise NetworkError(
@@ -348,19 +409,9 @@ async def _upload_tiled_file(
     initiated = _response_json(response)
     upload_token = str(initiated.get("upload_token") or "")
     try:
-        part_size = int(initiated["part_size"])
-        part_urls = list(initiated["part_urls"])
-        if not upload_token or part_size < 1 or not part_urls:
+        if not upload_token:
             raise ValueError("missing multipart fields")
-        part_urls.sort(key=lambda part: int(part["part_number"]))
-        if [int(part["part_number"]) for part in part_urls] != list(
-            range(1, len(part_urls) + 1)
-        ):
-            raise ValueError("invalid multipart part numbers")
-        if len(part_urls) != max(1, (file_size + part_size - 1) // part_size) or any(
-            not part.get("url") for part in part_urls
-        ):
-            raise ValueError("invalid multipart part URLs")
+        part_size, part_urls = _checked_parts(initiated, file_size)
         loop = asyncio.get_running_loop()
         expires_in = float(initiated.get("expires_in", 43200))
         renew_at = loop.time() + expires_in * 0.75
@@ -470,6 +521,187 @@ async def _upload_tiled_file(
         ) from exc
 
 
+# --- Direct form uploads ---
+#
+# Chain per run: _direct_tickets() asks `<base>/direct-uploads/initiate/` for a
+# ticket per form-path file (_goes_direct), up to _DIRECT_INITIATE_BATCH per
+# request -> _upload_file() hands a file with a ticket to _send_direct(), which
+# PUTs its parts to the presigned URLs and posts `complete` with the fields the
+# form POST would have carried. Every way out keeps the 3.2.0 result:
+#   - initiate 404 / `direct_upload_unavailable` -> None: the run stops asking
+#     and uses the form POST (the server predates the routes or has them off);
+#   - any other initiate failure -> that batch uses the form POST;
+#   - a part that will not PUT after its retries (at once on a 412 or 403)
+#     -> that file's form POST, into the main Region (it is <= 100 MiB, which
+#     the POST accepts). Nothing is aborted: the server's bucket lifecycle
+#     reaps an open multipart upload; a single PUT's object, if one was
+#     stored, is not reaped (it stays unused, never completed).
+# A one-part file asks for a single PUT (`single_put`): one URL, living 1 h,
+# whose part entry lists headers the PUT sends verbatim (Content-Type,
+# Cache-Control, `If-None-Match: *`).
+# `complete` is idempotent per ticket on the server (it answers the first item
+# and charges once), so a lost answer is asked again instead of being reported.
+
+
+async def _initiate_direct(
+    api: httpx.AsyncClient, base: str, files: list[Path]
+) -> list[dict[str, Any]] | None:
+    """Ask the server for one direct upload per file, in the files' order.
+
+    ``base`` is the route prefix (``/api/sdk/projects/<id>`` or
+    ``/api/sdk/data-assets``). Returns None when the server refuses direct
+    uploads (404 or ``direct_upload_unavailable``); raises the SDK's errors
+    for 401/403 like the form POST; raises _FallbackToSimpleUploadError for
+    anything else, so the caller sends those files by form POST.
+    """
+    try:
+        response = await api.post(
+            f"{base}/direct-uploads/initiate/",
+            json={
+                "files": [
+                    {"file_name": path.name, "file_size": path.stat().st_size}
+                    for path in files
+                ],
+                # A one-part file may then get one PUT URL with `headers`
+                # to send (no multipart upload to start or complete).
+                "single_put": True,
+            },
+        )
+    except httpx.TransportError as exc:
+        raise _FallbackToSimpleUploadError(error_text(exc)) from exc
+    if _can_fallback_from_initiate(response):
+        return None
+    if response.status_code in (401, 403):
+        raise_for_response(response)
+    if not response.is_success:
+        raise _FallbackToSimpleUploadError(_extract_error_message(response))
+    try:
+        uploads = response.json()["uploads"]
+        if not isinstance(uploads, list) or len(uploads) != len(files):
+            raise ValueError("one upload per file expected")
+    except (KeyError, TypeError, ValueError) as exc:
+        raise _FallbackToSimpleUploadError(
+            f"Unexpected initiate answer: {exc}"
+        ) from exc
+    return uploads
+
+
+async def _direct_tickets(
+    api: httpx.AsyncClient, base: str, files: list[Path]
+) -> dict[Path, dict[str, Any]] | None:
+    """Return a direct upload ticket per file, or None once the server refuses.
+
+    A batch whose initiate failed otherwise gets no tickets: its files keep the
+    form POST.
+    """
+    tickets: dict[Path, dict[str, Any]] = {}
+    for start in range(0, len(files), _DIRECT_INITIATE_BATCH):
+        batch = files[start : start + _DIRECT_INITIATE_BATCH]
+        try:
+            uploads = await _initiate_direct(api, base, batch)
+        except _FallbackToSimpleUploadError:
+            continue
+        if uploads is None:
+            return None
+        tickets.update(zip(batch, uploads, strict=True))
+    return tickets
+
+
+async def _send_direct(
+    api: httpx.AsyncClient,
+    base: str,
+    ticket: dict[str, Any],
+    path: Path,
+    fields: dict[str, Any],
+    *,
+    storage: httpx.AsyncClient,
+) -> dict[str, Any]:
+    """PUT a file to its ticket's part URLs, then complete it with ``fields``.
+
+    ``storage`` is a client without the API key: S3 refuses a presigned
+    request that carries a second signature. ``fields`` are the form POST's
+    own fields (list values repeat the field, as the POST sends them); the
+    complete is multipart/form-data like the POST, plus ``upload_token`` and
+    ``parts`` (JSON ``[{part_number, etag}]``). Returns the POST's answer.
+
+    Raises _FallbackToSimpleUploadError when the ticket is unusable or a part
+    will not upload (the caller then POSTs the file), _TiledUploadRejectedError
+    with the server's message when ``complete`` refuses the file.
+    """
+    file_size = path.stat().st_size
+    try:
+        upload_token = str(ticket["upload_token"] or "")
+        if not upload_token:
+            raise ValueError("missing multipart fields")
+        part_size, part_urls = _checked_parts(ticket, file_size)
+    except (KeyError, TypeError, ValueError) as exc:
+        raise _FallbackToSimpleUploadError(
+            f"Unexpected initiate answer: {exc}"
+        ) from exc
+    numbers = [int(part["part_number"]) for part in part_urls]
+    # A form-path file is at most two parts; they go up side by side.
+    semaphore = asyncio.Semaphore(len(part_urls))
+    results = await asyncio.gather(
+        *(
+            _put_tiled_part(
+                storage,
+                semaphore,
+                path,
+                url=str(part["url"]),
+                start=(number - 1) * part_size,
+                size=min(part_size, file_size - (number - 1) * part_size),
+                headers=part.get("headers"),
+            )
+            for number, part in zip(numbers, part_urls, strict=True)
+        ),
+        return_exceptions=True,
+    )
+    for result in results:
+        if isinstance(result, NetworkError):
+            raise _FallbackToSimpleUploadError(str(result)) from result
+        if isinstance(result, BaseException):
+            raise result
+    form = {
+        **fields,
+        "upload_token": upload_token,
+        "parts": json.dumps(
+            [
+                {"part_number": number, "etag": etag}
+                for number, etag in zip(numbers, results, strict=True)
+            ]
+        ),
+    }
+    # `(None, value)` parts: httpx sends `data=` alone url-encoded, and the
+    # route takes the POST's multipart/form-data.
+    parts = [
+        (name, (None, str(value)))
+        for name, values in form.items()
+        for value in (values if isinstance(values, list) else [values])
+    ]
+    last_error = ""
+    for attempt in range(RETRY_COUNT + 1):
+        if attempt:
+            await asyncio.sleep(RETRY_DELAY_SECONDS)
+        try:
+            response = await api.post(f"{base}/direct-uploads/complete/", files=parts)
+        except httpx.TransportError as exc:
+            last_error = error_text(exc)
+            continue
+        if response.status_code < 500:
+            break
+        last_error = _extract_error_message(response)
+    else:
+        raise _TiledUploadRejectedError(last_error)
+    if response.status_code in (401, 403):
+        raise_for_response(response)
+    if response.status_code >= 400:
+        raise _TiledUploadRejectedError(_extract_error_message(response))
+    try:
+        return _response_json(response)
+    except NetworkError as exc:
+        raise _TiledUploadRejectedError(str(exc)) from exc
+
+
 async def _upload_file(
     api_client: httpx.AsyncClient,
     storage_client: httpx.AsyncClient,
@@ -483,8 +715,36 @@ async def _upload_file(
     complete_fields: dict[str, Any] | None = None,
     generic_type: str | None = None,
     initiate_fields: dict[str, Any] | None = None,
+    direct_base: str | None = None,
+    direct_ticket: dict[str, Any] | None = None,
+    large_images: bool = False,
 ) -> tuple[dict[str, Any] | None, str | None]:
-    direct = _should_use_direct_upload(path, generic_type)
+    """Upload one file by the route its type, size and the server choose.
+
+    ``direct_ticket`` (from _direct_tickets, with its ``direct_base``) sends a
+    form-path file direct; the file was routed when the ticket was asked for.
+    ``large_images``: the server takes uploads direct, so pictures above
+    DIRECT_UPLOAD_MIN_BYTES use the multipart routes (_should_use_direct_upload).
+    """
+    if direct_ticket is not None and direct_base is not None:
+        try:
+            return (
+                await _send_direct(
+                    api_client,
+                    direct_base,
+                    direct_ticket,
+                    path,
+                    simple_data,
+                    storage=storage_client,
+                ),
+                None,
+            )
+        except _FallbackToSimpleUploadError:
+            pass
+        except _TiledUploadRejectedError as exc:
+            return None, str(exc)
+        return await _post_file(api_client, simple_endpoint, path, data=simple_data)
+    direct = _should_use_direct_upload(path, generic_type, images=large_images)
     if direct or _should_use_tiled_multipart(path):
         try:
             payload = await _upload_tiled_file(
@@ -623,11 +883,15 @@ async def _upload_project_async(
     batch_size: int,
     show_progress: bool,
     max_concurrent_uploads: int = UPLOAD_CONCURRENCY,
+    direct_uploads: bool = False,
 ) -> UploadResult:
     failures: list[UploadFailure] = []
     responses: list[dict[str, Any]] = []
     successful_medical = False
     batch_error: Exception | None = None
+    # Set while the server takes form-path files direct (`upload-info`
+    # advertised it and no initiate has refused); a refusal ends it for the run.
+    direct_base = f"/api/sdk/projects/{project_id}" if direct_uploads else None
     # Files in flight at once; a slow server (one local web process) answers
     # each upload in seconds, so fewer at a time avoids long queues.
     chunk_size = max(1, min(max_concurrent_uploads, batch_size))
@@ -641,11 +905,32 @@ async def _upload_project_async(
             for start in range(0, len(files), chunk_size):
                 chunk = files[start : start + chunk_size]
                 tasks = []
-                generic_types = []
-                for path in chunk:
-                    file_generic_type = generic_type or detect_file_generic_type(path)
+                generic_types = [
+                    generic_type or detect_file_generic_type(path) for path in chunk
+                ]
+                tickets: dict[Path, dict[str, Any]] | None = {}
+                if direct_base is not None:
+                    try:
+                        tickets = await _direct_tickets(
+                            client,
+                            direct_base,
+                            [
+                                path
+                                for path, file_type in zip(
+                                    chunk, generic_types, strict=True
+                                )
+                                if _goes_direct(path, file_type, images=True)
+                            ],
+                        )
+                    except Exception as exc:
+                        # A 401/403 at initiate stops the run like one from an
+                        # upload: earlier chunks' DICOM series still finalize.
+                        batch_error = exc
+                        break
+                    if tickets is None:
+                        direct_base, tickets = None, {}
+                for path, file_generic_type in zip(chunk, generic_types, strict=True):
                     declared_type = _declared_type(path, generic_type)
-                    generic_types.append(file_generic_type)
                     fields = {"session_id": session_id}
                     if file_generic_type == "video":
                         fields["fps"] = str(fps)
@@ -674,6 +959,9 @@ async def _upload_project_async(
                             session_id=session_id,
                             generic_type=file_generic_type,
                             initiate_fields=initiate_fields,
+                            direct_base=direct_base,
+                            direct_ticket=tickets.get(path),
+                            large_images=direct_base is not None,
                         )
                     )
                 results = await asyncio.gather(*tasks, return_exceptions=True)
@@ -778,6 +1066,7 @@ def upload_project(
             batch_size=batch_size,
             show_progress=show_progress,
             max_concurrent_uploads=max_concurrent_uploads,
+            direct_uploads=bool(upload_info.get("direct_uploads")),
         )
     )
     result.total += len(preflight_failures)
@@ -875,6 +1164,40 @@ async def _upload_assets_async(
     resolved_folder_id = folder_id
     resolved_folder_name = folder or ""
     progress = tqdm.tqdm(total=len(files), ncols=80, disable=not show_progress)
+    direct_base = "/api/sdk/data-assets"
+    # The library has no upload-info, so the server's answers to the first
+    # file tell whether it takes uploads direct: every response lists what it
+    # accepts in X-Server-Accepts (`direct-uploads` with STORAGE_DIRECT_UPLOADS).
+    # The first file itself goes as in 3.2.0, so a server without direct
+    # uploads gets exactly 3.2.0's requests. A later initiate refusal turns
+    # direct off for the rest of the run.
+    accepts: set[str] = set()
+    direct = False
+
+    async def read_accepts(response: httpx.Response) -> None:
+        header = response.headers.get("X-Server-Accepts", "")
+        accepts.update(value.strip() for value in header.split(","))
+
+    async def direct_tickets(paths: list[Path]) -> dict[Path, dict[str, Any]]:
+        nonlocal direct
+        if not direct:
+            return {}
+        tickets = await _direct_tickets(
+            client,
+            direct_base,
+            [
+                path
+                for path in paths
+                if _goes_direct(
+                    path, generic_type or detect_file_generic_type(path), images=True
+                )
+            ],
+        )
+        if tickets is None:
+            direct = False
+            return {}
+        return tickets
+
     try:
         part_semaphore = asyncio.Semaphore(TILED_PART_CONCURRENCY)
         async with (
@@ -882,8 +1205,13 @@ async def _upload_assets_async(
             httpx.AsyncClient(timeout=600.0) as storage_client,
         ):
             remaining = list(files)
-            while remaining and not resolved_folder_id:
+            # Files go alone until the folder is known (with `folder`), and the
+            # first one alone in any case: its answers say whether to go direct.
+            client.event_hooks["response"].append(read_accepts)
+            first_sent = False
+            while remaining and not (resolved_folder_id and first_sent):
                 first = remaining.pop(0)
+                first_sent = True
                 payload, error = await _upload_file(
                     client,
                     storage_client,
@@ -892,7 +1220,7 @@ async def _upload_assets_async(
                     simple_endpoint="/api/sdk/data-assets/upload/",
                     simple_data=_asset_form_data(
                         folder=folder,
-                        folder_id=None,
+                        folder_id=resolved_folder_id,
                         path=path,
                         tags=tags,
                         custom_metadata=custom_metadata,
@@ -903,7 +1231,7 @@ async def _upload_assets_async(
                     tiled_endpoint="/api/sdk/data-assets/tiled-uploads",
                     complete_fields=_asset_complete_data(
                         folder=folder,
-                        folder_id=None,
+                        folder_id=resolved_folder_id,
                         path=path,
                         tags=tags,
                         custom_metadata=custom_metadata,
@@ -916,17 +1244,23 @@ async def _upload_assets_async(
                     failures.append(UploadFailure(first, error))
                     continue
                 payload = payload or {}
-                response_error = _asset_response_error(payload)
+                response_error = _asset_response_error(payload, resolved_folder_id)
                 if response_error:
                     failures.append(UploadFailure(first, response_error))
                     continue
                 responses.append(payload)
                 resolved_folder_id = str(payload["folder_id"])
-                resolved_folder_name = str(payload.get("folder_name", folder or ""))
+                # 3.2.0 never sent a folder_id run's first file alone, so its
+                # result kept `folder or ""`; keep that answer.
+                if not folder_id:
+                    resolved_folder_name = str(payload.get("folder_name", folder or ""))
+            client.event_hooks["response"].remove(read_accepts)
+            direct = "direct-uploads" in accepts
 
             for start in range(0, len(remaining), UPLOAD_CONCURRENCY):
                 chunk = remaining[start : start + UPLOAD_CONCURRENCY]
                 tasks = []
+                tickets = await direct_tickets(chunk)
                 for file_path in chunk:
                     tasks.append(
                         _upload_file(
@@ -957,6 +1291,9 @@ async def _upload_assets_async(
                                 generic_type or detect_file_generic_type(file_path)
                             ),
                             initiate_fields=_declared_fields(file_path, generic_type),
+                            direct_base=direct_base,
+                            direct_ticket=tickets.get(file_path),
+                            large_images=direct,
                         )
                     )
                 for file_path, (payload, error) in zip(

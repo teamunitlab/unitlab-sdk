@@ -6,6 +6,7 @@ import pytest
 
 from unitlab import (
     AuthenticationError,
+    PermissionDeniedError,
     ProcessingTimeoutError,
     UnitlabClient,
     _uploader,
@@ -27,8 +28,17 @@ def test_html_and_timeseries_files_are_uploadable(tmp_path, filename, generic_ty
     assert _uploader.collect_files(path) == [path]
 
 
-def configured_client(handler):
+def configured_client(handler, monkeypatch=None):
+    """A client whose requests reach ``handler``; storage PUTs too with monkeypatch."""
     transport = httpx.MockTransport(handler)
+    if monkeypatch is not None:
+        native_async_client = httpx.AsyncClient
+
+        def storage_client(*args, **kwargs):
+            kwargs.setdefault("transport", transport)
+            return native_async_client(*args, **kwargs)
+
+        monkeypatch.setattr(httpx, "AsyncClient", storage_client)
     client = UnitlabClient(api_key="key", api_url="http://testserver")
     client._api.client.close()
     client._api.client = httpx.Client(
@@ -796,4 +806,502 @@ def test_asset_upload_preserves_authentication_error(tmp_path):
     client = configured_client(handler)
     with pytest.raises(AuthenticationError, match="Invalid API key"):
         client.assets.upload(tmp_path)
+    client.close()
+
+
+# --- Direct form uploads (SDK 3.2.1) ---
+#
+# A server with STORAGE_DIRECT_UPLOADS says so in project `upload-info`
+# (`direct_uploads`); the library has no upload-info, so asset uploads probe the
+# initiate route once per run. Each form-path file is then PUT straight into
+# storage and `complete` runs the server's form code on it.
+
+PROJECT_INFO = {
+    "accepted_formats": ["png"],
+    "max_file_sizes": {"img": 1_000_000},
+    "max_file_size": 1_000_000,
+    "generic_type": None,
+}
+
+
+def _form_fields(request):
+    """Multipart fields of a request as {name: [values]}; asserts no file part."""
+    body = request.content.decode("latin1")
+    assert "filename=" not in body
+    fields = {}
+    for name, value in re.findall(r'name="([^"]+)"\r\n\r\n(.*?)\r\n--', body, re.S):
+        fields.setdefault(name, []).append(value)
+    return fields
+
+
+def _ticket(index, *, id_key="datasource_id"):
+    return {
+        "upload_token": f"token-{index}",
+        id_key: f"id-{index}",
+        "upload_id": f"upload-{index}",
+        "part_size": 64 * 1024 * 1024,
+        "part_urls": [{"part_number": 1, "url": f"https://storage.test/part-{index}"}],
+        "expires_in": 3600,
+    }
+
+
+def _no_sleep(monkeypatch):
+    async def no_sleep(_delay):
+        return None
+
+    monkeypatch.setattr(_uploader.asyncio, "sleep", no_sleep)
+
+
+def test_direct_when_server_advertises(monkeypatch, tmp_path):
+    for index in range(3):
+        (tmp_path / f"{index}.png").write_bytes(b"png%d" % index)
+    initiates, puts, completes, posts = [], {}, [], []
+
+    def handler(request):
+        path = request.url.path
+        if path.endswith("/upload-info/"):
+            return httpx.Response(200, json={**PROJECT_INFO, "direct_uploads": True})
+        if path == "/api/sdk/projects/p1/direct-uploads/initiate/":
+            initiates.append(json.loads(request.content))
+            return httpx.Response(200, json={"uploads": [_ticket(i) for i in range(3)]})
+        if request.url.host == "storage.test":
+            assert request.method == "PUT"
+            assert "authorization" not in request.headers
+            puts[path] = request.content
+            return httpx.Response(200, headers={"ETag": f'"etag-{path[-1]}"'})
+        if path == "/api/sdk/projects/p1/direct-uploads/complete/":
+            assert request.headers["content-type"].startswith("multipart/form-data")
+            fields = _form_fields(request)
+            completes.append(fields)
+            index = fields["upload_token"][0][-1]
+            return httpx.Response(
+                201,
+                json={
+                    "datasource_id": f"id-{index}",
+                    "upload_session_id": fields["session_id"][0],
+                    "generic_type": "img",
+                },
+            )
+        posts.append(path)
+        raise AssertionError(path)
+
+    client = configured_client(handler, monkeypatch)
+    batch = Project("p1", "Project", {"pk": "p1"}, client).upload(tmp_path)
+
+    assert initiates == [
+        {
+            "files": [{"file_name": f"{i}.png", "file_size": 4} for i in range(3)],
+            "single_put": True,
+        }
+    ]
+    assert puts == {f"/part-{i}": b"png%d" % i for i in range(3)}
+    assert sorted(fields["upload_token"][0] for fields in completes) == [
+        "token-0",
+        "token-1",
+        "token-2",
+    ]
+    for fields in completes:
+        index = fields["upload_token"][0][-1]
+        assert json.loads(fields["parts"][0]) == [
+            {"part_number": 1, "etag": f"etag-{index}"}
+        ]
+        assert fields["session_id"] == [batch.batch_queue_id]
+    assert posts == []
+    assert batch.uploaded == 3
+    assert sorted(batch.data_item_ids) == ["id-0", "id-1", "id-2"]
+    client.close()
+
+
+def test_direct_single_put_sends_the_signed_headers(monkeypatch, tmp_path):
+    # A one-part file's URL signs the object's type and cache (server
+    # tiled_upload_views._single_put_url): the PUT must carry them.
+    (tmp_path / "a.png").write_bytes(b"png")
+    headers = {
+        "Content-Type": "image/png",
+        "Cache-Control": "max-age=86400",
+        "If-None-Match": "*",
+    }
+    ticket = _ticket(0)
+    ticket["part_urls"][0]["headers"] = headers
+    puts = []
+
+    def handler(request):
+        path = request.url.path
+        if path.endswith("/upload-info/"):
+            return httpx.Response(200, json={**PROJECT_INFO, "direct_uploads": True})
+        if path.endswith("/direct-uploads/initiate/"):
+            assert json.loads(request.content)["single_put"] is True
+            return httpx.Response(200, json={"uploads": [ticket]})
+        if request.url.host == "storage.test":
+            puts.append(request.headers)
+            return httpx.Response(200, headers={"ETag": '"etag-0"'})
+        assert path.endswith("/direct-uploads/complete/")
+        return httpx.Response(
+            201,
+            json={
+                "datasource_id": "id-0",
+                "upload_session_id": "s",
+                "generic_type": "img",
+            },
+        )
+
+    client = configured_client(handler, monkeypatch)
+    batch = Project("p1", "Project", {"pk": "p1"}, client).upload(tmp_path)
+
+    assert batch.uploaded == 1
+    (sent,) = puts
+    assert sent["content-type"] == "image/png"
+    assert sent["cache-control"] == "max-age=86400"
+    assert sent["if-none-match"] == "*"
+    assert sent["content-length"] == "3"
+    assert "authorization" not in sent
+    client.close()
+
+
+def test_post_when_not_advertised(tmp_path):
+    (tmp_path / "a.png").write_bytes(b"png")
+    paths = []
+
+    def handler(request):
+        paths.append(request.url.path)
+        if request.method == "GET":
+            return httpx.Response(200, json={**PROJECT_INFO, "direct_uploads": False})
+        assert request.url.path == "/api/sdk/projects/p1/upload-data/"
+        return httpx.Response(201, json={"datasource_id": "ds", "generic_type": "img"})
+
+    client = configured_client(handler)
+    batch = Project("p1", "Project", {"pk": "p1"}, client).upload(tmp_path)
+
+    assert batch.uploaded == 1
+    assert paths == [
+        "/api/sdk/projects/p1/upload-info/",
+        "/api/sdk/projects/p1/upload-data/",
+    ]
+    client.close()
+
+
+def test_falls_back_to_post_when_initiate_refused(tmp_path):
+    (tmp_path / "a.png").write_bytes(b"png")
+    (tmp_path / "b.png").write_bytes(b"png")
+    paths = []
+
+    def handler(request):
+        paths.append(request.url.path)
+        if request.method == "GET":
+            return httpx.Response(200, json={**PROJECT_INFO, "direct_uploads": True})
+        if request.url.path.endswith("/direct-uploads/initiate/"):
+            return httpx.Response(400, json={"detail": "direct_upload_unavailable"})
+        assert request.url.path == "/api/sdk/projects/p1/upload-data/"
+        return httpx.Response(201, json={"datasource_id": "ds", "generic_type": "img"})
+
+    client = configured_client(handler)
+    # One file per chunk: the refusal is remembered, the second chunk only POSTs.
+    batch = Project("p1", "Project", {"pk": "p1"}, client).upload(
+        tmp_path, max_concurrent_uploads=1
+    )
+
+    assert batch.uploaded == 2
+    assert paths == [
+        "/api/sdk/projects/p1/upload-info/",
+        "/api/sdk/projects/p1/direct-uploads/initiate/",
+        "/api/sdk/projects/p1/upload-data/",
+        "/api/sdk/projects/p1/upload-data/",
+    ]
+    client.close()
+
+
+@pytest.mark.parametrize("status", [412, 403])
+def test_single_put_412_or_403_falls_back_to_post_at_once(
+    monkeypatch, tmp_path, status
+):
+    # 412: If-None-Match: * says the object is already stored; 403: the one
+    # URL (never renewed for a form-path file) is refused. Sending the bytes
+    # again cannot pass either way: one PUT, then the form POST (the stored
+    # object, if any, is never completed).
+    (tmp_path / "a.png").write_bytes(b"png")
+    _no_sleep(monkeypatch)
+    ticket = _ticket(0)
+    ticket["part_urls"][0]["headers"] = {"If-None-Match": "*"}
+    calls = {"put": 0, "post": 0}
+
+    def handler(request):
+        path = request.url.path
+        if path.endswith("/upload-info/"):
+            return httpx.Response(200, json={**PROJECT_INFO, "direct_uploads": True})
+        if path.endswith("/direct-uploads/initiate/"):
+            return httpx.Response(200, json={"uploads": [ticket]})
+        if request.url.host == "storage.test":
+            calls["put"] += 1
+            return httpx.Response(status)
+        assert path == "/api/sdk/projects/p1/upload-data/", path
+        calls["post"] += 1
+        return httpx.Response(201, json={"datasource_id": "ds", "generic_type": "img"})
+
+    client = configured_client(handler, monkeypatch)
+    batch = Project("p1", "Project", {"pk": "p1"}, client).upload(tmp_path)
+
+    assert batch.data_item_ids == ["ds"]
+    assert calls == {"put": 1, "post": 1}
+    client.close()
+
+
+def test_falls_back_to_post_when_put_fails(monkeypatch, tmp_path):
+    (tmp_path / "a.png").write_bytes(b"png")
+    _no_sleep(monkeypatch)
+    calls = {"put": 0, "complete": 0, "post": 0}
+
+    def handler(request):
+        path = request.url.path
+        if path.endswith("/upload-info/"):
+            return httpx.Response(200, json={**PROJECT_INFO, "direct_uploads": True})
+        if path.endswith("/direct-uploads/initiate/"):
+            return httpx.Response(200, json={"uploads": [_ticket(0)]})
+        if request.url.host == "storage.test":
+            calls["put"] += 1
+            return httpx.Response(500)
+        if path.endswith("/direct-uploads/complete/"):
+            calls["complete"] += 1
+            raise AssertionError("complete after a failed PUT")
+        assert path == "/api/sdk/projects/p1/upload-data/"
+        assert b'filename="a.png"' in request.content
+        calls["post"] += 1
+        return httpx.Response(201, json={"datasource_id": "ds", "generic_type": "img"})
+
+    client = configured_client(handler, monkeypatch)
+    batch = Project("p1", "Project", {"pk": "p1"}, client).upload(tmp_path)
+
+    assert batch.uploaded == 1
+    assert batch.data_item_ids == ["ds"]
+    assert calls == {
+        "put": _uploader.TILED_PART_MAX_ATTEMPTS,
+        "complete": 0,
+        "post": 1,
+    }
+    client.close()
+
+
+def test_large_image_goes_tiled_when_direct_is_on(monkeypatch, tmp_path):
+    (tmp_path / "big.png").write_bytes(b"0123456789")
+    monkeypatch.setattr(_uploader, "DIRECT_UPLOAD_MIN_BYTES", 4)
+    paths = []
+
+    def handler(request):
+        paths.append(request.url.path)
+        if request.url.path.endswith("/upload-info/"):
+            return httpx.Response(200, json={**PROJECT_INFO, "direct_uploads": True})
+        if request.url.host == "storage.test":
+            return httpx.Response(200, headers={"ETag": '"etag"'})
+        if request.url.path.endswith("/tiled-uploads/initiate/"):
+            return httpx.Response(
+                200, json={**_ticket(0), "part_size": 10, "datasource_id": "big"}
+            )
+        assert request.url.path.endswith("/tiled-uploads/complete/")
+        return httpx.Response(202, json={"datasource_id": "big"})
+
+    client = configured_client(handler, monkeypatch)
+    batch = Project("p1", "Project", {"pk": "p1"}, client).upload(tmp_path)
+
+    assert batch.data_item_ids == ["big"]
+    assert paths == [
+        "/api/sdk/projects/p1/upload-info/",
+        "/api/sdk/projects/p1/tiled-uploads/initiate/",
+        "/part-0",
+        "/api/sdk/projects/p1/tiled-uploads/complete/",
+    ]
+    client.close()
+
+
+def _asset_answer(index):
+    return {
+        "folder_id": "folder-1",
+        "folder_name": "Raw data",
+        "asset": {
+            "pk": f"asset-{index}",
+            "file_name": f"{index}.png",
+            "generic_type": "img",
+            "folder_id": "folder-1",
+        },
+    }
+
+
+TODAYS_ACCEPTS = {"X-Server-Accepts": "gzip-body, delta-object-authorship"}
+
+
+def test_assets_post_as_before_when_not_advertised(tmp_path):
+    for index in range(3):
+        (tmp_path / f"{index}.png").write_bytes(b"png")
+    paths = []
+
+    def handler(request):
+        paths.append(request.url.path)
+        return httpx.Response(
+            201, headers=TODAYS_ACCEPTS, json=_asset_answer(len(paths))
+        )
+
+    client = configured_client(handler)
+    result = client.assets.upload(tmp_path, folder="Raw data")
+
+    assert result.uploaded == 3
+    assert paths == ["/api/sdk/data-assets/upload/"] * 3
+    client.close()
+
+
+def test_assets_go_direct_after_first_post_advertises(monkeypatch, tmp_path):
+    for index in range(3):
+        (tmp_path / f"{index}.png").write_bytes(b"png")
+    posts, initiates, completes = [], [], []
+
+    def handler(request):
+        path = request.url.path
+        accepts = {"X-Server-Accepts": "gzip-body, direct-uploads"}
+        if path == "/api/sdk/data-assets/upload/":
+            posts.append(request.content.decode("latin1"))
+            return httpx.Response(201, headers=accepts, json=_asset_answer(0))
+        if path == "/api/sdk/data-assets/direct-uploads/initiate/":
+            files = json.loads(request.content)["files"]
+            initiates.append([entry["file_name"] for entry in files])
+            return httpx.Response(
+                200,
+                json={"uploads": [_ticket(i, id_key="asset_id") for i in (1, 2)]},
+            )
+        if request.url.host == "storage.test":
+            return httpx.Response(200, headers={"ETag": '"etag"'})
+        assert path == "/api/sdk/data-assets/direct-uploads/complete/"
+        fields = _form_fields(request)
+        completes.append(fields)
+        return httpx.Response(
+            201, headers=accepts, json=_asset_answer(fields["upload_token"][0][-1])
+        )
+
+    client = configured_client(handler, monkeypatch)
+    # With folder_id the first file also goes alone: its answer says "direct".
+    result = client.assets.upload(
+        tmp_path,
+        folder_id="folder-1",
+        tags=["a", "b"],
+        custom_metadata={"region": "CA-BC"},
+    )
+
+    assert result.uploaded == 3
+    # 3.2.0 parity: a folder_id run answers folder_name "" (no folder given).
+    assert result.folder_name == ""
+    assert len(posts) == 1
+    assert 'filename="0.png"' in posts[0]
+    assert 'name="folder_id"' in posts[0]
+    assert initiates == [["1.png", "2.png"]]
+    assert sorted(fields["upload_token"][0] for fields in completes) == [
+        "token-1",
+        "token-2",
+    ]
+    for fields in completes:
+        assert fields["folder_id"] == ["folder-1"]
+        assert fields["tags"] == ["a", "b"]
+        assert fields["custom_metadata"] == ['{"region":"CA-BC"}']
+    client.close()
+
+
+def test_initiate_refusal_by_permission_still_finalizes_medical(monkeypatch, tmp_path):
+    (tmp_path / "a.dcm").write_bytes(b"dicom")
+    (tmp_path / "b.dcm").write_bytes(b"dicom")
+    initiates = finalizes = 0
+
+    def handler(request):
+        nonlocal initiates, finalizes
+        path = request.url.path
+        if path.endswith("/upload-info/"):
+            return httpx.Response(
+                200,
+                json={
+                    "accepted_formats": ["dcm"],
+                    "max_file_sizes": {"medical": 1_000},
+                    "generic_type": None,
+                    "direct_uploads": True,
+                },
+            )
+        if path.endswith("/direct-uploads/initiate/"):
+            initiates += 1
+            if initiates == 2:
+                return httpx.Response(
+                    403, json={"detail": "No access", "code": "permission_denied"}
+                )
+            return httpx.Response(200, json={"uploads": [_ticket(0)]})
+        if request.url.host == "storage.test":
+            return httpx.Response(200, headers={"ETag": '"etag"'})
+        if path.endswith("/direct-uploads/complete/"):
+            return httpx.Response(
+                201, json={"datasource_id": "id-0", "generic_type": "medical"}
+            )
+        assert path.endswith("/finalize/")
+        finalizes += 1
+        return httpx.Response(200, json={})
+
+    client = configured_client(handler, monkeypatch)
+    project = Project("p1", "Project", {"pk": "p1"}, client)
+
+    with pytest.raises(PermissionDeniedError):
+        project.upload(tmp_path, max_concurrent_uploads=1)
+    assert (initiates, finalizes) == (2, 1)
+    client.close()
+
+
+def test_more_than_fifty_files_take_two_initiates(monkeypatch, tmp_path):
+    names = [f"{index:02}.png" for index in range(51)]
+    for name in names:
+        (tmp_path / name).write_bytes(b"png")
+    initiates = []
+
+    def handler(request):
+        path = request.url.path
+        if path.endswith("/upload-info/"):
+            return httpx.Response(200, json={**PROJECT_INFO, "direct_uploads": True})
+        if path.endswith("/direct-uploads/initiate/"):
+            files = [
+                entry["file_name"] for entry in json.loads(request.content)["files"]
+            ]
+            initiates.append(files)
+            return httpx.Response(200, json={"uploads": [_ticket(n) for n in files]})
+        if request.url.host == "storage.test":
+            return httpx.Response(200, headers={"ETag": '"etag"'})
+        assert path.endswith("/direct-uploads/complete/")
+        token = _form_fields(request)["upload_token"][0]
+        return httpx.Response(201, json={"datasource_id": token})
+
+    client = configured_client(handler, monkeypatch)
+    batch = Project("p1", "Project", {"pk": "p1"}, client).upload(
+        tmp_path, max_concurrent_uploads=len(names)
+    )
+
+    assert batch.uploaded == 51
+    assert initiates == [names[:50], names[50:]]
+    client.close()
+
+
+def test_lost_complete_answer_is_asked_again(monkeypatch, tmp_path):
+    # The server's complete is idempotent per ticket (first item, one charge).
+    (tmp_path / "a.png").write_bytes(b"png")
+    _no_sleep(monkeypatch)
+    completes = 0
+
+    def handler(request):
+        nonlocal completes
+        path = request.url.path
+        if path.endswith("/upload-info/"):
+            return httpx.Response(200, json={**PROJECT_INFO, "direct_uploads": True})
+        if path.endswith("/direct-uploads/initiate/"):
+            return httpx.Response(200, json={"uploads": [_ticket(0)]})
+        if request.url.host == "storage.test":
+            return httpx.Response(200, headers={"ETag": '"etag"'})
+        assert path.endswith("/direct-uploads/complete/")
+        completes += 1
+        if completes == 1:
+            raise httpx.ReadTimeout("", request=request)
+        if completes == 2:
+            return httpx.Response(502, text="Bad gateway")
+        return httpx.Response(201, json={"datasource_id": "id-0"})
+
+    client = configured_client(handler, monkeypatch)
+    batch = Project("p1", "Project", {"pk": "p1"}, client).upload(tmp_path)
+
+    assert batch.data_item_ids == ["id-0"]
+    assert completes == 3
     client.close()

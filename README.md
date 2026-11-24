@@ -210,7 +210,11 @@ operation depends on the generated COG/DZI derivative.
 Video, medical (NIfTI, NRRD, DICOM), audio and PDF files larger than 64 MiB
 also upload directly to storage, up to 500 MiB each; smaller ones keep the
 ordinary upload. A large medical file becomes one volume on its own and is not
-grouped with other files of the batch into a series.
+grouped with other files of the batch into a series. When the server says it
+takes direct uploads, files of up to 100 MiB also go straight to storage (the
+server checks them as it checks the ordinary upload) and images above 64 MiB
+take the large-file route; a file whose direct upload fails is sent the
+ordinary way.
 
 DICOM files named without a usable extension (`IM00001`, or a UID) are found by
 their content when a folder is uploaded and are sent as medical; nothing needs
